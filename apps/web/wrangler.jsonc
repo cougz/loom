@@ -10,11 +10,19 @@
 
   "observability": { "enabled": true },
 
-  // Static assets (the TanStack Start client bundle) served by the Worker.
+  // Static assets served by the Worker.
+  //
+  // `./public/` is the source of truth: it holds the pre-built OpenCode mount
+  // bundle under opencode-ui/ (built by scripts/build-opencode-ui), and will
+  // later be the destination for the TanStack Start client build too.
+  //
+  // `not_found_handling` is "none" so unmatched paths fall through to the
+  // Worker (which serves /dash HTML, /mcp JSON, /opencode/* proxies). An SPA
+  // 404 handler here would swallow those routes.
   "assets": {
-    "directory": "./dist/client",
+    "directory": "./public",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "none"
   },
 
   "durable_objects": {
