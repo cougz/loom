@@ -80,23 +80,54 @@ wrangler r2 bucket create loom-publications        2>/dev/null || warn "Bucket l
 wrangler r2 bucket create loom-tool-attachments    2>/dev/null || warn "Bucket loom-tool-attachments may already exist"
 
 log "Creating KV namespace…"
-KV_OUTPUT=$(wrangler kv:namespace create loom-platform 2>&1 || true)
-KV_ID=$(echo "$KV_OUTPUT" | grep -oE '[0-9a-f]{32}' | head -1 || true)
+KV_OUTPUT=$(wrangler kv namespace create loom-platform --json 2>&1 || true)
+KV_ID=$(echo "$KV_OUTPUT" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d.get('id', ''), end='')
+except Exception:
+    pass
+" 2>/dev/null || true)
 
 if [[ -z "$KV_ID" ]]; then
-  log "KV namespace may already exist, attempting to list…"
-  KV_LIST=$(wrangler kv:namespace list 2>/dev/null || true)
-  KV_ID=$(echo "$KV_LIST" | grep -A1 '"title": "loom-platform"' | grep -oE '[0-9a-f]{32}' | head -1 || true)
+  log "KV namespace may already exist, fetching ID…"
+  KV_LIST=$(wrangler kv namespace list --json 2>/dev/null || true)
+  KV_ID=$(echo "$KV_LIST" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    ns = next((x for x in data if x.get('title') == 'loom-platform'), None)
+    print(ns['id'] if ns else '', end='')
+except Exception:
+    pass
+" 2>/dev/null || true)
 fi
 
 log "Creating D1 database…"
-D1_OUTPUT=$(wrangler d1 create loom-platform 2>&1 || true)
-D1_ID=$(echo "$D1_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)
+D1_OUTPUT=$(wrangler d1 create loom-platform --json 2>&1 || true)
+D1_ID=$(echo "$D1_OUTPUT" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d.get('uuid') or d.get('database_id') or '', end='')
+except Exception:
+    pass
+" 2>/dev/null || true)
 
 if [[ -z "$D1_ID" ]]; then
-  log "D1 database may already exist, attempting to list…"
-  D1_LIST=$(wrangler d1 list 2>/dev/null || true)
-  D1_ID=$(echo "$D1_LIST" | grep -A1 '"name": "loom-platform"' | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)
+  log "D1 database may already exist, fetching ID…"
+  D1_LIST=$(wrangler d1 list --json 2>/dev/null || true)
+  D1_ID=$(echo "$D1_LIST" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    db = next((x for x in data if x.get('name') == 'loom-platform'), None)
+    if db:
+        print(db.get('uuid') or db.get('database_id') or '', end='')
+except Exception:
+    pass
+" 2>/dev/null || true)
 fi
 
 [[ -z "$KV_ID" ]] && fatal "Could not obtain KV namespace ID. Check wrangler is logged in."
