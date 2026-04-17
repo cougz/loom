@@ -52,11 +52,12 @@ LOOM_HOSTNAME="${LOOM_HOSTNAME#https://}"
 LOOM_HOSTNAME="${LOOM_HOSTNAME#http://}"
 LOOM_HOSTNAME="${LOOM_HOSTNAME%/}"
 
-prompt_required CF_ACCESS_TEAM_DOMAIN \
-  "Access team domain — no https:// (e.g. yourcompany.cloudflareaccess.com)"
-CF_ACCESS_TEAM_DOMAIN="${CF_ACCESS_TEAM_DOMAIN#https://}"
-CF_ACCESS_TEAM_DOMAIN="${CF_ACCESS_TEAM_DOMAIN#http://}"
-CF_ACCESS_TEAM_DOMAIN="${CF_ACCESS_TEAM_DOMAIN%/}"
+prompt_required CF_ACCESS_TEAM_NAME \
+  "Access team name (e.g. yourcompany)"
+CF_ACCESS_TEAM_NAME="${CF_ACCESS_TEAM_NAME#https://}"
+CF_ACCESS_TEAM_NAME="${CF_ACCESS_TEAM_NAME%.cloudflareaccess.com}"
+CF_ACCESS_TEAM_NAME="${CF_ACCESS_TEAM_NAME%/}"
+CF_ACCESS_TEAM_DOMAIN="${CF_ACCESS_TEAM_NAME}.cloudflareaccess.com"
 
 prompt_required CF_ACCESS_AUD \
   "Access application AUD tag (Zero Trust → Access → your app)"
