@@ -133,9 +133,20 @@ In the Cloudflare dashboard, once you've done a first manual
         pnpm --filter @loom/web deploy
 
 7. **Root directory:** `/`
-8. Save.
-9. (Optional) Enable **Preview deployments** for non-main branches if
-   you want PRs to get ephemeral URLs.
+8. **Environment variables** — the deploy command calls
+   `scripts/gen-wrangler-config`, which reads these from the CI
+   environment to generate the wrangler config without modifying
+   any tracked files:
+
+   | Variable | Value |
+   |---|---|
+   | `PLATFORM_KV_ID` | KV namespace ID from `./scripts/setup` output |
+   | `PLATFORM_D1_ID` | D1 database ID from `./scripts/setup` output |
+   | `LOOM_HOSTNAME` | e.g. `loom.yourcompany.com` |
+
+9. Save.
+10. (Optional) Enable **Preview deployments** for non-main branches if
+    you want PRs to get ephemeral URLs.
 
 From now on, every push to `main` builds and deploys automatically.
 You can watch progress in the **Builds** tab.

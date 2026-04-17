@@ -2,8 +2,8 @@
 # loom bootstrap
 #
 # Creates the Cloudflare resources loom needs (R2 buckets, KV namespace,
-# D1 database), prompts for required secrets and sets them via wrangler,
-# then prints a wrangler.jsonc fragment with the resource IDs filled in.
+# D1 database), sets all required Worker secrets, and patches
+# apps/web/wrangler.jsonc with the resource IDs and your hostname.
 # Idempotent — safe to re-run.
 #
 # Prerequisites:
@@ -35,22 +35,25 @@ prompt_required() {
   printf -v "$var" '%s' "$val"
 }
 
-command -v pnpm >/dev/null || fatal "pnpm not found. Install it first."
+
+command -v pnpm >/dev/null     || fatal "pnpm not found. Install it first."
 command -v wrangler >/dev/null || pnpm dlx wrangler --version >/dev/null
 
 log "Installing dependencies…"
 pnpm install --frozen-lockfile
 
-# ── Prompt for secrets ──────────────────────────────────────────────────────
+# ── Prompt for configuration ─────────────────────────────────────────────────
 
-printf "\n${COL_GREEN}[loom]${COL_RESET} Enter your Cloudflare details.\n"
-printf "       (All values are set as Worker secrets — never stored in files.)\n\n"
+printf "\n${COL_GREEN}[loom]${COL_RESET} Enter your Cloudflare details.\n\n"
+
+prompt_required LOOM_HOSTNAME \
+  "Hostname for loom (e.g. loom.yourcompany.com)"
 
 prompt_required CF_ACCESS_TEAM_DOMAIN \
   "Access team domain (e.g. yourcompany.cloudflareaccess.com)"
 
 prompt_required CF_ACCESS_AUD \
-  "Access application AUD tag (from Zero Trust → Access → your app)"
+  "Access application AUD tag (Zero Trust → Access → your app)"
 
 prompt_required CF_ACCOUNT_ID \
   "Cloudflare account ID (from: wrangler whoami)"
@@ -58,12 +61,11 @@ prompt_required CF_ACCOUNT_ID \
 prompt_required CF_API_TOKEN \
   "Cloudflare API token (R2/KV/D1/AI/Browser edit permissions)" --secret
 
-# Auto-generate PLATFORM_JWT_SECRET if openssl is available; otherwise prompt.
 if command -v openssl >/dev/null 2>&1; then
   PLATFORM_JWT_SECRET=$(openssl rand -base64 32)
   log "PLATFORM_JWT_SECRET auto-generated."
 else
-  warn "openssl not found — enter a random 32+ byte string for PLATFORM_JWT_SECRET."
+  warn "openssl not found — enter a random 32+ byte string."
   prompt_required PLATFORM_JWT_SECRET "PLATFORM_JWT_SECRET" --secret
 fi
 
@@ -97,8 +99,21 @@ if [[ -z "$D1_ID" ]]; then
   D1_ID=$(echo "$D1_LIST" | grep -A1 '"name": "loom-platform"' | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)
 fi
 
-KV_ID=${KV_ID:-"__KV_NAMESPACE_ID__"}
-D1_ID=${D1_ID:-"__D1_DATABASE_ID__"}
+[[ -z "$KV_ID" ]] && fatal "Could not obtain KV namespace ID. Check wrangler is logged in."
+[[ -z "$D1_ID" ]] && fatal "Could not obtain D1 database ID. Check wrangler is logged in."
+
+# ── Write gitignored deploy-env ───────────────────────────────────────────────
+
+log "Writing apps/web/.deploy-env…"
+cat > apps/web/.deploy-env <<ENVFILE
+PLATFORM_KV_ID=${KV_ID}
+PLATFORM_D1_ID=${D1_ID}
+LOOM_HOSTNAME=${LOOM_HOSTNAME}
+ENVFILE
+
+# ── Generate local wrangler config ───────────────────────────────────────────
+
+scripts/gen-wrangler-config
 
 # ── Set Worker secrets ───────────────────────────────────────────────────────
 
@@ -113,29 +128,30 @@ printf '%s' "$PLATFORM_JWT_SECRET"   | wrangler secret put PLATFORM_JWT_SECRET  
 
 log "Secrets set."
 
-# ── Print wrangler.jsonc fragment ────────────────────────────────────────────
+# ── Done ─────────────────────────────────────────────────────────────────────
 
 cat <<EOF
 
-${COL_GREEN}=== Copy this into apps/web/wrangler.jsonc ===${COL_RESET}
+${COL_GREEN}Setup complete.${COL_RESET}
 
-  "kv_namespaces": [
-    { "binding": "PLATFORM_KV", "id": "${KV_ID}" }
-  ],
-
-  "d1_databases": [
-    {
-      "binding": "PLATFORM_D1",
-      "database_name": "loom-platform",
-      "database_id": "${D1_ID}"
-    }
-  ],
-
-${COL_GREEN}=== End of wrangler.jsonc fragment ===${COL_RESET}
+apps/web/.deploy-env and apps/web/wrangler.local.jsonc have been written
+locally. Neither file is tracked by git.
 
 Next steps:
-  1. Paste the IDs above into apps/web/wrangler.jsonc and update LOOM_HOSTNAME + routes.
-  2. Commit and push.
-  3. Connect Workers Builds (see docs/DEPLOYMENT.md Step 5).
+  1. First manual deploy (required before Workers Builds can connect):
+       pnpm --filter @loom/web deploy
+
+  2. Build the container image:
+       wrangler containers build -t loom-sandbox:v1 -p .
+
+  3. Connect Workers Builds in the Cloudflare dashboard.
+     Build:  pnpm install --frozen-lockfile && pnpm --filter @loom/web build
+     Deploy: pnpm --filter @loom/web deploy
+
+     Set these environment variables in the Workers Builds settings so
+     the deploy step can generate the config in CI:
+       PLATFORM_KV_ID = ${KV_ID}
+       PLATFORM_D1_ID = ${D1_ID}
+       LOOM_HOSTNAME  = ${LOOM_HOSTNAME}
 
 EOF

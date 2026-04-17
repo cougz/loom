@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Generate apps/web/wrangler.local.jsonc from the committed template
+# (apps/web/wrangler.jsonc) by substituting __FILL_ME__ placeholders.
+#
+# Variable sources (first one that provides each var wins):
+#   1. Process environment — set by Workers Builds dashboard env vars.
+#   2. apps/web/.deploy-env — written by ./scripts/setup, gitignored.
+#
+# Required vars:
+#   PLATFORM_KV_ID    KV namespace ID  (32-char hex)
+#   PLATFORM_D1_ID    D1 database ID   (UUID)
+#   LOOM_HOSTNAME     Full hostname     e.g. loom.yourcompany.com
+#
+# Optional:
+#   LOOM_ZONE         DNS zone name; defaults to everything after the
+#                     first dot of LOOM_HOSTNAME (yourcompany.com)
+
+set -euo pipefail
+
+# Always run from repo root regardless of where the script is called from.
+cd "$(dirname "$0")/.."
+
+# Source local env file if present (not present in Workers Builds — uses env vars).
+if [ -f apps/web/.deploy-env ]; then
+  set -a; . apps/web/.deploy-env; set +a
+fi
+
+: "${PLATFORM_KV_ID:?PLATFORM_KV_ID not set. Run ./scripts/setup or set as env var.}"
+: "${PLATFORM_D1_ID:?PLATFORM_D1_ID not set. Run ./scripts/setup or set as env var.}"
+: "${LOOM_HOSTNAME:?LOOM_HOSTNAME not set. Run ./scripts/setup or set as env var.}"
+LOOM_ZONE="${LOOM_ZONE:-${LOOM_HOSTNAME#*.}}"
+
+sed \
+  -e "s|\"id\": \"__FILL_ME_FROM_SETUP_SCRIPT__\"|\"id\": \"${PLATFORM_KV_ID}\"|" \
+  -e "s|\"database_id\": \"__FILL_ME_FROM_SETUP_SCRIPT__\"|\"database_id\": \"${PLATFORM_D1_ID}\"|" \
+  -e "s|__LOOM_HOSTNAME__|${LOOM_HOSTNAME}|g" \
+  -e "s|__LOOM_ZONE__|${LOOM_ZONE}|g" \
+  apps/web/wrangler.jsonc > apps/web/wrangler.local.jsonc
+
+echo "[loom] Generated apps/web/wrangler.local.jsonc"
