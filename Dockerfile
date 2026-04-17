@@ -4,13 +4,16 @@
 # Sandbox Durable Object. Hosts:
 #   • OpenCode CLI + web UI (the agent)
 #   • Git, Node, Python, and common CLI tools the agent uses
-#   • A Zero Trust root CA so OpenCode's outbound traffic to model providers
-#     flows through Cloudflare's network.
+#   • An optional Zero Trust root CA so OpenCode's outbound traffic to model
+#     providers flows through Cloudflare's network.
 #
 # Ports:
 #   4096  → OpenCode (API + web UI)
 #   5173, 3000, 8000, 8080 → common ports agent-built apps expose via the
 #                            Sandbox SDK's exposePort() (preview URLs)
+#
+# Build context: repo root (wrangler.jsonc "image": "../../Dockerfile").
+# All COPY paths are relative to the repo root.
 
 FROM docker.io/cloudflare/sandbox:0.8.9
 
@@ -31,17 +34,20 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g pnpm@latest
 
-# Zero Trust root CA (so OpenCode's fetch() to model providers trusts the
-# Cloudflare-terminated egress). The cert is baked in at build time from
-# the repo root.
-COPY zero_trust_cert.pem /usr/local/share/ca-certificates/cloudflare-zt.crt
-RUN update-ca-certificates \
+# Zero Trust root CA (optional).
+# If zero_trust_cert.pem at the repo root is non-empty, it is installed as a
+# trusted CA so OpenCode's fetch() to model providers trusts Cloudflare-
+# terminated egress. Leave the file empty when ZT inspection is not in use.
+COPY zero_trust_cert.pem /tmp/zt.pem
+RUN if [ -s /tmp/zt.pem ]; then \
+      cp /tmp/zt.pem /usr/local/share/ca-certificates/cloudflare-zt.crt \
+      && update-ca-certificates; \
+    fi \
     && echo 'export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt' \
-         >> /etc/profile.d/node-ca.sh
+         >> /etc/profile.d/node-ca.sh \
+    && rm -f /tmp/zt.pem
 
-# OpenCode install — pinned via apps/web/public/opencode-ui/VERSION in
-# the Worker bundle. The sandbox fetches the pinned UI bundle from the
-# Worker on first boot.
+# OpenCode install
 RUN curl -fsSL https://opencode.ai/install | bash \
     && ln -sf /root/.opencode/bin/opencode /usr/local/bin/opencode
 
@@ -51,25 +57,25 @@ RUN mkdir -p ${LOOM_WORKSPACE} ${OPENCODE_DIR} \
 
 # Default OpenCode config — points to loom's MCP server and sets provider
 # defaults. Overridable by the user via the loom UI (writes here at runtime).
-COPY sandbox-app/opencode.jsonc ${OPENCODE_DIR}/opencode.jsonc
-COPY sandbox-app/tui.jsonc      ${OPENCODE_DIR}/tui.jsonc
+COPY apps/web/src/sandbox-app/opencode.jsonc ${OPENCODE_DIR}/opencode.jsonc
+COPY apps/web/src/sandbox-app/tui.jsonc      ${OPENCODE_DIR}/tui.jsonc
 
 # /view publishing sidecar — watches LOOM_PUBLISH_DIR and syncs to R2
 # via the loom Worker API. See docs/VIEW.md.
-COPY sandbox-app/loom-publish-sidecar/loom-publish /usr/local/bin/loom-publish
+COPY apps/web/src/sandbox-app/loom-publish-sidecar/loom-publish /usr/local/bin/loom-publish
 RUN chmod +x /usr/local/bin/loom-publish
 
 # loom-code — the agent's primary tool for cheap composition. POSTs a JS
 # snippet to the Worker, which runs it in a Worker Loader isolate
 # (no network, 30s timeout, loom.* namespace only). See docs/CODE-MODE.md.
-COPY sandbox-app/loom-code/loom-code             /usr/local/bin/loom-code
+COPY apps/web/src/sandbox-app/loom-code/loom-code /usr/local/bin/loom-code
 RUN chmod +x /usr/local/bin/loom-code
 
 # loom-ai, loom-render — CLI wrappers over Workers AI and Browser
 # Rendering. Each is a thin HTTP client to the Worker's framework
 # endpoints (not /mcp) authenticated with the platform JWT.
-COPY sandbox-app/loom-ai/loom-ai                 /usr/local/bin/loom-ai
-COPY sandbox-app/loom-render/loom-render         /usr/local/bin/loom-render
+COPY apps/web/src/sandbox-app/loom-ai/loom-ai     /usr/local/bin/loom-ai
+COPY apps/web/src/sandbox-app/loom-render/loom-render /usr/local/bin/loom-render
 RUN chmod +x /usr/local/bin/loom-ai /usr/local/bin/loom-render
 
 # Ports OpenCode + common preview servers use

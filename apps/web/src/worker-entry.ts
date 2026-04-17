@@ -2,18 +2,22 @@
  * Main Worker entry point.
  *
  * Single deployment hosts:
- *   - /dash/*    — TanStack Start app (Access-gated)
+ *   - /dash/*    — Dash chrome (Access-gated); /dash/oc/* proxied to OpenCode
  *   - /mcp       — MCP server (Access-gated)
  *   - /view/*    — Public publishing (no auth)
- *   - *.hostname — Sandbox preview URLs
+ *   - *.hostname — Sandbox preview URLs (SDK handles routing)
  *
  * Dispatch order (per SPEC.md Component map):
- *   1. *.hostname → proxyToSandbox()
- *   2. /view/*    → view router (no JWT)
- *   3. /dash/*    → TanStack Start (JWT required)
- *   4. /mcp       → createMcpHandler (JWT or platform)
+ *   1. *.hostname → proxyToSandbox()    (SDK — preview URL token in hostname)
+ *   2. /view/*    → view router          (no JWT)
+ *   3. /dash/oc/* → proxyOcRequest()    (JWT required — OpenCode web UI proxy)
+ *   4. /dash/*    → dash chrome HTML    (JWT required)
+ *   5. /mcp       → MCP handler         (JWT required)
  */
 
+import { getSandbox, proxyToSandbox as sdkProxyToSandbox } from "@cloudflare/sandbox";
+import { createOpencodeServer, proxyToOpencodeServer } from "@cloudflare/sandbox/opencode";
+import type { Sandbox as SandboxDO } from "./durable-objects/index.js";
 import { createMcpServerHandler } from "./mcp/server.js";
 import { type AuthContext, authenticateRequest, createMockAuthContext } from "./server/auth.js";
 import { handleViewRequest } from "./view/router.js";
@@ -22,8 +26,7 @@ export type Env = {
   // Durable Objects
   // biome-ignore lint/suspicious/noExplicitAny: DurableObject types
   USER_REGISTRY: DurableObjectNamespace<any>;
-  // biome-ignore lint/suspicious/noExplicitAny: DurableObject types
-  SANDBOX: DurableObjectNamespace<any>;
+  SANDBOX: DurableObjectNamespace<SandboxDO>;
 
   // Bindings
   PLATFORM_KV: KVNamespace;
@@ -64,42 +67,61 @@ function isSandboxPreview(hostname: string, loomHostname: string): boolean {
 }
 
 /**
- * Extract userId from sandbox preview hostname.
- * Format: <token>.<userId-slug>.loom.hostname
+ * Proxy requests from *.loom.hostname/* to the user's sandbox container.
+ * The SDK's proxyToSandbox extracts the sandbox ID from the hostname token
+ * and routes the request to the correct container instance.
  */
-// biome-ignore lint/correctness/noUnusedVariables: Used in M2
-function extractPreviewToken(
-  hostname: string,
-  loomHostname: string,
-): {
-  token: string;
-  previewHostname: string;
-} | null {
-  const suffix = `.${loomHostname}`;
-  if (!hostname.endsWith(suffix)) return null;
-
-  const prefix = hostname.slice(0, -suffix.length);
-  const parts = prefix.split(".");
-
-  // Need at least: token.previewHostname
-  if (parts.length < 2) return null;
-
-  const token = parts[0];
-  if (!token) return null;
-
-  const previewHostname = parts.slice(1).join(".");
-
-  return { token, previewHostname };
+async function proxyToSandbox(request: Request, env: Env): Promise<Response | null> {
+  // SDK expects { Sandbox: DurableObjectNamespace } — our binding is SANDBOX
+  return sdkProxyToSandbox(request, { Sandbox: env.SANDBOX });
 }
 
 /**
- * Proxy to sandbox for preview URLs.
- * Placeholder for M2.
+ * Proxy requests to /dash/oc/* to the user's OpenCode instance.
+ *
+ * - Starts OpenCode inside the container if not already running.
+ * - For initial HTML GET requests (no ?url=), redirects to inject
+ *   ?url=<origin>/dash/oc so OpenCode's frontend routes API calls
+ *   through our proxy path instead of directly to localhost:4096.
+ * - All subsequent requests strip /dash/oc and are forwarded verbatim
+ *   to port 4096 inside the container.
  */
-async function proxyToSandbox(_request: Request, _env: Env): Promise<Response | null> {
-  // M2 will implement actual proxy
-  // For M1, return null to continue to other handlers
-  return null;
+async function proxyOcRequest(request: Request, env: Env, auth: AuthContext): Promise<Response> {
+  const sandbox = getSandbox(env.SANDBOX, auth.userId, {
+    keepAlive: true,
+    normalizeId: true,
+  });
+
+  const server = await createOpencodeServer(sandbox, {
+    directory: "/home/user/workspace",
+  });
+
+  const url = new URL(request.url);
+  const accept = request.headers.get("accept") ?? "";
+
+  // For HTML GET requests without ?url=, redirect to inject the proxy base URL.
+  // OpenCode's frontend uses ?url= as the base for all API calls; pointing it
+  // to /dash/oc ensures every call passes through this proxy handler.
+  if (
+    request.method === "GET" &&
+    !url.searchParams.has("url") &&
+    (accept.includes("text/html") || url.pathname === "/dash/oc" || url.pathname === "/dash/oc/")
+  ) {
+    url.searchParams.set("url", `${url.origin}/dash/oc`);
+    return Response.redirect(url.toString(), 302);
+  }
+
+  // Strip the /dash/oc prefix before forwarding to the container.
+  // OpenCode serves at its root; it has no knowledge of our proxy prefix.
+  url.pathname = url.pathname.replace(/^\/dash\/oc/, "") || "/";
+  const rewritten = new Request(url.toString(), {
+    method: request.method,
+    headers: new Headers(request.headers),
+    body: request.body,
+    redirect: "manual",
+  });
+
+  return proxyToOpencodeServer(rewritten, sandbox, server);
 }
 
 /**
@@ -150,7 +172,8 @@ export default {
       if (proxyResponse) {
         return proxyResponse;
       }
-      // If proxy returns null (M1), fall through to show placeholder
+      // proxyToSandbox returned null — sandbox not yet provisioned or no
+      // matching route; fall through to 404 below.
     }
 
     // 2. /view/* — public, no JWT verification
@@ -158,68 +181,102 @@ export default {
       return handleViewRequest(request, env);
     }
 
-    // 3. /dash/* — Access-gated, TanStack Start
+    // 3. /dash/oc/* — OpenCode web UI proxy (JWT required)
+    // Must be checked before the generic /dash/* handler below.
+    if (url.pathname.startsWith("/dash/oc/") || url.pathname === "/dash/oc") {
+      try {
+        const auth = await getAuthContext(request, env);
+        return proxyOcRequest(request, env, auth);
+      } catch {
+        return Response.redirect(`/cdn-cgi/access/login/${url.hostname}`, 302);
+      }
+    }
+
+    // 4. /dash/* — Dash chrome (Access-gated)
     if (url.pathname.startsWith("/dash/") || url.pathname === "/dash") {
       try {
         const auth = await getAuthContext(request, env);
 
-        // For M1: return a simple placeholder page
-        // In M2+, this will serve the TanStack Start app
+        // Dash chrome: full-height iframe of the OpenCode web UI.
+        // The ?url= parameter is pre-set so OpenCode's frontend routes all
+        // API calls through /dash/oc (our proxy prefix) from the first load.
         if (url.pathname === "/dash" || url.pathname === "/dash/") {
+          const ocBase = `${url.origin}/dash/oc`;
           return new Response(
             `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>loom</title>
   <style>
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 2rem;
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
       background: #0a0a0a;
       color: #e5e5e5;
+      font-family: system-ui, -apple-system, sans-serif;
+      overflow: hidden;
     }
-    h1 {
+    header {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.5rem 1rem;
+      background: #111;
+      border-bottom: 1px solid #222;
+      height: 2.5rem;
+      flex-shrink: 0;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1rem;
       color: #f97316;
-      font-size: 2rem;
-      margin-bottom: 1rem;
+      letter-spacing: 0.05em;
     }
-    .user-info {
-      background: #171717;
-      padding: 1rem;
-      border-radius: 0.5rem;
-      margin-top: 1rem;
+    header .email {
+      margin-left: auto;
+      font-size: 0.75rem;
+      color: #737373;
     }
-    .user-id {
-      font-family: monospace;
-      color: #a3a3a3;
-      font-size: 0.875rem;
+    .frame-wrap {
+      position: absolute;
+      inset: 2.5rem 0 0 0;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
     }
   </style>
 </head>
 <body>
-  <h1>loom</h1>
-  <p>Hello, ${escapeHtml(auth.email)}</p>
-  <div class="user-info">
-    <p><strong>User ID:</strong> <span class="user-id">${escapeHtml(auth.userId)}</span></p>
-    <p><strong>Status:</strong> M1 milestone — auth + boot complete</p>
+  <header>
+    <h1>loom</h1>
+    <span class="email">${escapeHtml(auth.email)}</span>
+  </header>
+  <div class="frame-wrap">
+    <iframe
+      src="/dash/oc/?url=${encodeURIComponent(ocBase)}"
+      title="OpenCode"
+      allow="clipboard-read; clipboard-write"
+    ></iframe>
   </div>
 </body>
 </html>`,
             {
               status: 200,
-              headers: { "Content-Type": "text/html" },
+              headers: { "Content-Type": "text/html; charset=utf-8" },
             },
           );
         }
 
-        // For other /dash/* paths, return placeholder
+        // Other /dash/* paths — placeholder until TanStack Start lands in M2+
         return new Response(
           `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>loom — ${escapeHtml(url.pathname)}</title>
@@ -239,13 +296,12 @@ export default {
   <h1>loom</h1>
   <p>Path: ${escapeHtml(url.pathname)}</p>
   <p>Hello, ${escapeHtml(auth.email)}</p>
-  <p>User ID: ${escapeHtml(auth.userId)}</p>
-  <p><em>Full TanStack Start UI coming in M2+</em></p>
+  <p><em>Full TanStack Start UI coming in M3+</em></p>
 </body>
 </html>`,
           {
             status: 200,
-            headers: { "Content-Type": "text/html" },
+            headers: { "Content-Type": "text/html; charset=utf-8" },
           },
         );
       } catch {
@@ -254,38 +310,28 @@ export default {
       }
     }
 
-    // 4. /mcp — Access-gated, MCP server
+    // 5. /mcp — Access-gated, MCP server
     if (url.pathname === "/mcp") {
       try {
-        // Create MCP handler with auth context getter
         const mcpHandler = createMcpServerHandler(getAuthContext);
         return await mcpHandler.fetch(request, env);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "MCP error";
-        return new Response(
-          JSON.stringify({
-            error: "MCP Error",
-            message: errorMessage,
-          }),
-          {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
+        return new Response(JSON.stringify({ error: "MCP Error", message: errorMessage }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
       }
     }
 
-    // 5. Root path — redirect to /dash
+    // 6. Root path — redirect to /dash
     if (url.pathname === "/" || url.pathname === "") {
       return Response.redirect(`${url.origin}/dash`, 302);
     }
 
     // 404 for unmatched paths
     return new Response(
-      JSON.stringify({
-        error: "Not Found",
-        message: `Path ${url.pathname} not found`,
-      }),
+      JSON.stringify({ error: "Not Found", message: `Path ${url.pathname} not found` }),
       {
         status: 404,
         headers: { "Content-Type": "application/json" },

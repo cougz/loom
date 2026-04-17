@@ -1,23 +1,16 @@
 /**
  * Sandbox Durable Object — re-export from @cloudflare/sandbox.
  *
- * In M1 this is just a skeleton; the full implementation lands in M2.
- * The Sandbox DO provisions a Linux container running OpenCode.
+ * The Sandbox DO manages the per-user Linux container running OpenCode.
+ * Full container lifecycle (provisioning, process management, port exposure,
+ * keepAlive heartbeats, preview-URL routing) is handled by the SDK.
+ *
+ * The Worker calls:
+ *   sandbox.startProcess("opencode serve --port 4096 --hostname 0.0.0.0")
+ * on first user interaction; the SDK handles container boot, port readiness,
+ * and request proxying transparently.
+ *
+ * M2: wired up — sandbox starts and proxies /dash/oc/* to OpenCode.
+ * M3: OpenCode preconfigured with platform JWT + Code Mode wired.
  */
-
-// For M1, we export a minimal placeholder that satisfies wrangler.jsonc
-// The actual Sandbox class from @cloudflare/sandbox will be used in M2
-export class Sandbox implements DurableObject {
-  async fetch(_request: Request): Promise<Response> {
-    // Placeholder: in M2 this will proxy to the actual container
-    return new Response(
-      JSON.stringify({
-        status: "Sandbox DO placeholder - full implementation in M2",
-      }),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
-  }
-}
+export { Sandbox } from "@cloudflare/sandbox";

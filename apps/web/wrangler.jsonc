@@ -78,5 +78,10 @@
     { "pattern": "*.loom.yourcompany.com/*", "zone_name": "yourcompany.com" }
   ],
 
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserRegistry", "Sandbox"] }]
+  "migrations": [
+    // v1: UserRegistry uses SQLite storage (DO with sql.exec API)
+    { "tag": "v1", "new_sqlite_classes": ["UserRegistry"] },
+    // v2: Sandbox is a Container class — NOT a SQLite DO; use new_classes
+    { "tag": "v2", "new_classes": ["Sandbox"] }
+  ]
 }

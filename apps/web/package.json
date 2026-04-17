@@ -14,6 +14,7 @@
   "dependencies": {
     "@cloudflare/agents": "^0.0.16",
     "@cloudflare/kumo": "^1.19.0",
+    "@cloudflare/sandbox": "0.8.9",
     "@phosphor-icons/react": "^2.1.7",
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-router": "^1.89.0",

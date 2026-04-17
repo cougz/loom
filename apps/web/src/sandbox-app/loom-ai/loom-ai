@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# loom-ai — Workers AI CLI wrapper.
+#
+# Thin HTTP client to the loom Worker's AI framework endpoint.
+# Authenticated with the platform JWT. Routes inference through Workers AI
+# without exposing the user's provider key to the container.
+#
+# Usage: loom-ai run <model> [--prompt <text>] [--stream]
+#
+# Full implementation lands in M3 (framework primitives wired).
+# Until then this stub exits with an informative error.
+
+set -euo pipefail
+
+echo '{"ok":false,"error":"loom-ai stub — full implementation in M3","code":"NOT_IMPLEMENTED"}' >&2
+exit 1

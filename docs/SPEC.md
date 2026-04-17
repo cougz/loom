@@ -533,7 +533,7 @@ code yet.
 - `./scripts/setup` provisions R2 buckets, KV namespace, and D1 database.
 - pnpm lint && pnpm typecheck && pnpm test all green.
 
-### M2 — Sandbox + OpenCode
+### M2 — Sandbox + OpenCode ✅
 - Dockerfile builds; container image published.
 - `Sandbox` DO provisions one container per user.
 - Worker proxies `/dash/oc/*` to the sandbox's port 4096.

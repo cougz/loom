@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# loom-code — Code Mode CLI.
+#
+# Posts a JavaScript snippet to the loom Worker, which executes it inside a
+# Worker Loader isolate (no network, 30 s timeout, loom.* namespace).
+# Returns the serialised result to stdout.
+#
+# Usage:
+#   loom-code <<'JS'
+#   const files = await loom.workspace.list("/home/user/workspace");
+#   return files.map(f => f.name);
+#   JS
+#
+# Full implementation lands in M3 (Worker Loader wired end-to-end).
+# Until then this stub prints an error so the agent knows it is unavailable.
+
+set -euo pipefail
+
+LOOM_MCP_URL="${LOOM_MCP_URL:-}"
+
+if [ -z "$LOOM_MCP_URL" ]; then
+  echo '{"ok":false,"error":"loom-code not yet configured (M3)","code":"NOT_IMPLEMENTED"}' >&2
+  exit 1
+fi
+
+echo '{"ok":false,"error":"loom-code stub — full implementation in M3","code":"NOT_IMPLEMENTED"}' >&2
+exit 1

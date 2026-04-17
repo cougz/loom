@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# loom-render — Browser Rendering CLI wrapper.
+#
+# Thin HTTP client to the loom Worker's Browser Rendering framework endpoint.
+# Supports screenshot, PDF, and scrape operations via Cloudflare's Browser
+# Rendering binding.
+#
+# Usage:
+#   loom-render screenshot <url> [--output <path>]
+#   loom-render pdf         <url> [--output <path>]
+#   loom-render scrape      <url>
+#
+# Full implementation lands in M3 (framework primitives wired).
+# Until then this stub exits with an informative error.
+
+set -euo pipefail
+
+echo '{"ok":false,"error":"loom-render stub — full implementation in M3","code":"NOT_IMPLEMENTED"}' >&2
+exit 1

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# loom-publish — /view publishing sidecar.
+#
+# Watches LOOM_PUBLISH_DIR (default: /home/user/workspace/.publish) and syncs
+# changed files to R2 via the loom Worker API, authenticated with the platform
+# JWT written to ~/.opencode/loom-platform-jwt at sandbox start.
+#
+# Full implementation lands in M6. Until then this stub exits cleanly so the
+# Dockerfile builds and the Worker can call startProcess("loom-publish --watch")
+# without a crash.
+
+set -euo pipefail
+
+echo "[loom-publish] stub — full implementation in M6" >&2
+echo "[loom-publish] args: $*" >&2
+
+# Keep the process alive so the SDK doesn't try to restart it on every request.
+exec sleep infinity
