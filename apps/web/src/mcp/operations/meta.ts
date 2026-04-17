@@ -8,7 +8,7 @@ import { defineMcpOp } from "../define.js";
 export const whoami = defineMcpOp({
   name: "whoami",
   description: "Return the current user's identity.",
-  inputSchema: z.object({}),
+  inputSchema: {},
   async execute(_input, ctx) {
     return {
       ok: true,
@@ -22,7 +22,7 @@ export const whoami = defineMcpOp({
 export const workspaceSnapshot = defineMcpOp({
   name: "workspace.snapshot",
   description: "Create a snapshot of the current workspace state.",
-  inputSchema: z.object({}),
+  inputSchema: {},
   async execute(_input, _ctx) {
     // Placeholder for M3
     return {
@@ -36,7 +36,7 @@ export const workspaceSnapshot = defineMcpOp({
 export const workspaceRestore = defineMcpOp({
   name: "workspace.restore",
   description: "Restore workspace from a snapshot.",
-  inputSchema: z.object({ snapshotId: z.string() }),
+  inputSchema: { snapshotId: z.string() },
   async execute(_input, _ctx) {
     // Placeholder for M3
     return {

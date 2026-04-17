@@ -8,7 +8,7 @@ import { defineMcpOp } from "../define.js";
 export const viewList = defineMcpOp({
   name: "view.list",
   description: "List the current user's publications.",
-  inputSchema: z.object({}),
+  inputSchema: {},
   async execute(_input, ctx) {
     // Query PLATFORM_D1 for publications
     const { results } = await ctx.env.PLATFORM_D1.prepare(
@@ -34,9 +34,9 @@ export const viewList = defineMcpOp({
 export const viewRotate = defineMcpOp({
   name: "view.rotate",
   description: "Rotate the shortId for a publication, invalidating the old URL.",
-  inputSchema: z.object({
+  inputSchema: {
     alias: z.string(),
-  }),
+  },
   async execute(_input, _ctx) {
     // Placeholder for M6
     return {
@@ -50,9 +50,9 @@ export const viewRotate = defineMcpOp({
 export const viewRevoke = defineMcpOp({
   name: "view.revoke",
   description: "Revoke a publication.",
-  inputSchema: z.object({
+  inputSchema: {
     alias: z.string(),
-  }),
+  },
   async execute(_input, _ctx) {
     // Placeholder for M6
     return {
@@ -66,9 +66,9 @@ export const viewRevoke = defineMcpOp({
 export const viewUnrevoke = defineMcpOp({
   name: "view.unrevoke",
   description: "Restore a revoked publication within the grace period.",
-  inputSchema: z.object({
+  inputSchema: {
     alias: z.string(),
-  }),
+  },
   async execute(_input, _ctx) {
     // Placeholder for M6
     return {
@@ -82,10 +82,10 @@ export const viewUnrevoke = defineMcpOp({
 export const viewSetExpiry = defineMcpOp({
   name: "view.set_expiry",
   description: "Set or clear an expiry timestamp for a publication.",
-  inputSchema: z.object({
+  inputSchema: {
     alias: z.string(),
     expiresAt: z.number().nullable(),
-  }),
+  },
   async execute(_input, _ctx) {
     // Placeholder for M6
     return {
@@ -99,9 +99,9 @@ export const viewSetExpiry = defineMcpOp({
 export const viewSyncNow = defineMcpOp({
   name: "view.sync_now",
   description: "Force an immediate sync of a publication alias.",
-  inputSchema: z.object({
+  inputSchema: {
     alias: z.string(),
-  }),
+  },
   async execute(_input, _ctx) {
     // Placeholder for M6
     return {

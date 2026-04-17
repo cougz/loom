@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { type ZodRawShape, z } from "zod";
 import type { McpContext } from "../mcp/define.js";
 import {
   toolsGetRun,
@@ -23,6 +24,19 @@ import {
   workspaceSnapshot,
 } from "../mcp/operations/index.js";
 import type { UserId } from "../server/auth.js";
+
+/**
+ * Helper: build a ZodObject validator from an operation's raw
+ * inputSchema shape. Operations define `inputSchema` as the raw
+ * shape `{ foo: z.string() }` (what MCP's registerTool wants) so
+ * tests that want to exercise validation need to wrap it.
+ *
+ * Generic over the concrete shape so `.parse()` returns the narrow
+ * input type expected by `execute()`, not a loose index signature.
+ */
+function schemaOf<Shape extends ZodRawShape>(op: { inputSchema: Shape }): z.ZodObject<Shape> {
+  return z.object(op.inputSchema);
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -99,11 +113,11 @@ describe("workspace.snapshot", () => {
 
 describe("workspace.restore", () => {
   it("requires snapshotId — Zod throws on missing field", async () => {
-    await expect(workspaceRestore.inputSchema.parseAsync({} as unknown)).rejects.toThrow();
+    await expect(schemaOf(workspaceRestore).parseAsync({} as unknown)).rejects.toThrow();
   });
 
   it("accepts a valid snapshotId and returns NOT_IMPLEMENTED (M3 stub)", async () => {
-    const input = workspaceRestore.inputSchema.parse({ snapshotId: "snap-abc123" });
+    const input = schemaOf(workspaceRestore).parse({ snapshotId: "snap-abc123" });
     const result = await workspaceRestore.execute(input, makeCtx());
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -116,29 +130,27 @@ describe("workspace.restore", () => {
 
 describe("tools.list", () => {
   it("returns empty arrays for the default scope", async () => {
-    const input = toolsList.inputSchema.parse({});
+    const input = schemaOf(toolsList).parse({});
     const result = await toolsList.execute(input, makeCtx());
     expect(result).toEqual({ ok: true, data: { own: [], installed: [] } });
   });
 
   it("returns empty arrays for scope=private", async () => {
-    const input = toolsList.inputSchema.parse({ scope: "private" });
+    const input = schemaOf(toolsList).parse({ scope: "private" });
     const result = await toolsList.execute(input, makeCtx());
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data.installed).toEqual([]);
   });
 
   it("returns empty arrays for scope=shared", async () => {
-    const input = toolsList.inputSchema.parse({ scope: "shared" });
+    const input = schemaOf(toolsList).parse({ scope: "shared" });
     const result = await toolsList.execute(input, makeCtx());
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.data.own).toEqual([]);
   });
 
   it("rejects an invalid scope value", async () => {
-    await expect(
-      toolsList.inputSchema.parseAsync({ scope: "invalid" } as unknown),
-    ).rejects.toThrow();
+    await expect(schemaOf(toolsList).parseAsync({ scope: "invalid" } as unknown)).rejects.toThrow();
   });
 });
 
@@ -146,11 +158,11 @@ describe("tools.list", () => {
 
 describe("tools.invoke", () => {
   it("requires toolId — Zod throws on missing field", async () => {
-    await expect(toolsInvoke.inputSchema.parseAsync({} as unknown)).rejects.toThrow();
+    await expect(schemaOf(toolsInvoke).parseAsync({} as unknown)).rejects.toThrow();
   });
 
   it("returns NOT_IMPLEMENTED (M4 stub)", async () => {
-    const input = toolsInvoke.inputSchema.parse({ toolId: "tool-1" });
+    const input = schemaOf(toolsInvoke).parse({ toolId: "tool-1" });
     const result = await toolsInvoke.execute(input, makeCtx());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("NOT_IMPLEMENTED");
@@ -161,14 +173,14 @@ describe("tools.invoke", () => {
 
 describe("tools.propose_templatize", () => {
   it("accepts empty input and returns NOT_IMPLEMENTED (M4 stub)", async () => {
-    const input = toolsProposeTemplatize.inputSchema.parse({});
+    const input = schemaOf(toolsProposeTemplatize).parse({});
     const result = await toolsProposeTemplatize.execute(input, makeCtx());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("NOT_IMPLEMENTED");
   });
 
   it("accepts all optional fields", async () => {
-    const input = toolsProposeTemplatize.inputSchema.parse({
+    const input = schemaOf(toolsProposeTemplatize).parse({
       suggestedName: "my-tool",
       suggestedDescription: "does stuff",
       suggestedParameters: [{ name: "target" }],
@@ -182,11 +194,11 @@ describe("tools.propose_templatize", () => {
 
 describe("tools.get_run", () => {
   it("requires runId — Zod throws on missing field", async () => {
-    await expect(toolsGetRun.inputSchema.parseAsync({} as unknown)).rejects.toThrow();
+    await expect(schemaOf(toolsGetRun).parseAsync({} as unknown)).rejects.toThrow();
   });
 
   it("returns NOT_IMPLEMENTED (M4 stub)", async () => {
-    const input = toolsGetRun.inputSchema.parse({ runId: "run-abc" });
+    const input = schemaOf(toolsGetRun).parse({ runId: "run-abc" });
     const result = await toolsGetRun.execute(input, makeCtx());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("NOT_IMPLEMENTED");
@@ -223,11 +235,11 @@ describe("view.list", () => {
 
 describe("view.rotate", () => {
   it("requires alias — Zod throws on missing field", async () => {
-    await expect(viewRotate.inputSchema.parseAsync({} as unknown)).rejects.toThrow();
+    await expect(schemaOf(viewRotate).parseAsync({} as unknown)).rejects.toThrow();
   });
 
   it("returns NOT_IMPLEMENTED (M6 stub)", async () => {
-    const input = viewRotate.inputSchema.parse({ alias: "my-site" });
+    const input = schemaOf(viewRotate).parse({ alias: "my-site" });
     const result = await viewRotate.execute(input, makeCtx());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe("NOT_IMPLEMENTED");
@@ -238,7 +250,7 @@ describe("view.rotate", () => {
 
 describe("view.revoke", () => {
   it("requires alias", async () => {
-    await expect(viewRevoke.inputSchema.parseAsync({} as unknown)).rejects.toThrow();
+    await expect(schemaOf(viewRevoke).parseAsync({} as unknown)).rejects.toThrow();
   });
 
   it("returns NOT_IMPLEMENTED (M6 stub)", async () => {
@@ -251,7 +263,7 @@ describe("view.revoke", () => {
 
 describe("view.unrevoke", () => {
   it("requires alias", async () => {
-    await expect(viewUnrevoke.inputSchema.parseAsync({} as unknown)).rejects.toThrow();
+    await expect(schemaOf(viewUnrevoke).parseAsync({} as unknown)).rejects.toThrow();
   });
 
   it("returns NOT_IMPLEMENTED (M6 stub)", async () => {
@@ -265,18 +277,18 @@ describe("view.unrevoke", () => {
 describe("view.set_expiry", () => {
   it("requires alias", async () => {
     await expect(
-      viewSetExpiry.inputSchema.parseAsync({ expiresAt: null } as unknown),
+      schemaOf(viewSetExpiry).parseAsync({ expiresAt: null } as unknown),
     ).rejects.toThrow();
   });
 
   it("accepts alias + numeric expiresAt and returns NOT_IMPLEMENTED", async () => {
-    const input = viewSetExpiry.inputSchema.parse({ alias: "my-site", expiresAt: 9999999999 });
+    const input = schemaOf(viewSetExpiry).parse({ alias: "my-site", expiresAt: 9999999999 });
     const result = await viewSetExpiry.execute(input, makeCtx());
     expect(result.ok).toBe(false);
   });
 
   it("accepts alias + null expiresAt (clear expiry)", async () => {
-    const input = viewSetExpiry.inputSchema.parse({ alias: "my-site", expiresAt: null });
+    const input = schemaOf(viewSetExpiry).parse({ alias: "my-site", expiresAt: null });
     const result = await viewSetExpiry.execute(input, makeCtx());
     expect(result.ok).toBe(false);
   });
@@ -286,7 +298,7 @@ describe("view.set_expiry", () => {
 
 describe("view.sync_now", () => {
   it("requires alias", async () => {
-    await expect(viewSyncNow.inputSchema.parseAsync({} as unknown)).rejects.toThrow();
+    await expect(schemaOf(viewSyncNow).parseAsync({} as unknown)).rejects.toThrow();
   });
 
   it("returns NOT_IMPLEMENTED (M6 stub)", async () => {
