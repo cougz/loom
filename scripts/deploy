@@ -3,4 +3,3 @@
 # wired up. After that, push to main and let Cloudflare build + deploy.
 set -euo pipefail
 pnpm --filter @loom/web deploy
-pnpm --filter @loom/outbound deploy

@@ -1,8 +1,9 @@
-# `/view` — the public publishing surface
+# `/view` — the public publishing path
 
-> An unauthenticated origin where the agent can publish anything — static
-> files, a running web server, a JSON API, a one-shot HTML report, a mini
-> game — and share it via an unguessable URL.
+> An unauthenticated path on the main hostname where the agent can
+> publish anything — static files, a running web server, a JSON API, a
+> one-shot HTML report, a mini game — and share it via an unguessable
+> URL.
 
 `/view` is the one deliberately-open part of loom. `/dash` and `/mcp` are
 behind Cloudflare Access; `/view` is not. It's what you use when the
@@ -13,18 +14,45 @@ colleague, a client, the internet.
 
 ## URL shape
 
-    https://view.loom.yourcompany.com/<shortId>[/<path>]
+    https://loom.yourcompany.com/view/<shortId>[/<path>]
 
-- `view.loom.yourcompany.com` is a **dedicated origin**, separate from
-  `loom.yourcompany.com`. Published HTML can never read loom's cookies
-  or storage — enforced by the origin model.
+- Served from the **same hostname** as `/dash` and `/mcp`. One Worker,
+  one hostname, no extra DNS config. The Worker short-circuits Access
+  verification for any request path beginning with `/view/`.
 - `<shortId>` is a 12-character base62 string (~71 bits entropy),
   generated server-side. Unguessable, not enumerable.
 - `<path>` is optional and supports arbitrary sub-paths:
   `/view/k9x2mPq4Rs7L` (serves the publication's index),
   `/view/k9x2mPq4Rs7L/styles.css`, `/view/k9x2mPq4Rs7L/api/data.json`.
+- No `userId`, `email`, or any other identity is encoded in the URL.
 
-No `userId`, `email`, or any other identity is encoded in the URL.
+### Same-origin caveat
+
+Because `/view` lives on the main hostname, published HTML runs on the
+same origin as `/dash`. That means a malicious published page *could*
+read the Cloudflare Access session cookie via `document.cookie` (it is
+not `HttpOnly`) and impersonate the victim's `/dash` session.
+
+loom mitigates this with layered defaults (see §Security envelope):
+
+1. **Default strong CSP** on all static `/view` responses:
+   `sandbox allow-forms allow-scripts allow-popups;
+   default-src 'self'; script-src 'unsafe-inline' 'unsafe-eval';`
+   — the `sandbox` directive forces the page into a unique null origin
+   at the browser level, blocking cookie access even though the URL is
+   same-origin.
+2. The agent can **opt into** a less strict CSP when it knows its
+   content is trusted (e.g. when publishing its own HTML dashboard).
+   This is an explicit, logged operation — the manifest sets
+   `trusted: true` and the agent's user identity is attached.
+3. `/dash` embeds previews in `<iframe sandbox>` regardless, so a
+   preview cannot reach the host page.
+4. Admin surface (`/dash/admin`) is gated by a separate Access policy
+   group so a compromised Access session cannot trivially escalate.
+
+This is good-enough for a self-hosted team tool where operators trust
+their agent + members. If you need hard origin isolation, see
+"Configuration for stronger isolation" at the end of this document.
 
 ---
 
@@ -170,36 +198,64 @@ agent's (and user's) problem.
 
 ## How `/view` routing works
 
-Request arrives at `view.loom.yourcompany.com/<shortId>/<path>`. The
-Worker (same single deployment as `/dash` and `/mcp`):
+Request arrives at `loom.yourcompany.com/view/<shortId>/<path>`. The
+Worker dispatches in this **strict order**:
 
-1. Splits hostname; confirms it's the `view.` origin.
-2. Parses `<shortId>`; rejects malformed.
-3. Looks up the publication in `PLATFORM_D1.publications`:
+1. If hostname matches `*.loom.yourcompany.com` (sandbox preview) →
+   `proxyToSandbox()`.
+2. If path begins with `/view/` → **skip Access verification** and
+   route to the view handler (see below). This short-circuit happens
+   before any JWT check.
+3. Otherwise → verify Access JWT, then route `/dash` or `/mcp`.
+
+Inside the view handler:
+
+1. Parse `<shortId>`; reject malformed with 404.
+2. Look up the publication in `PLATFORM_D1.publications`:
    - If absent → 404.
    - If `revoked_at IS NOT NULL` → 410 Gone.
    - If `expires_at < now()` → 410 Gone.
-4. Loads the manifest (cached in `PLATFORM_KV` for 60s).
-5. Dispatches:
-   - Mode A: resolves `<path>` against the manifest's `files`/`rewrites`
-     rules, fetches from R2 at `publications/<userId>/<shortId>/<path>`,
-     applies headers, returns.
-   - Mode B: calls `proxyToSandbox`-style helper that targets the
+3. Load the manifest (cached in `PLATFORM_KV` for 60s).
+4. Dispatch:
+   - Mode A: resolve `<path>` against the manifest's `files`/`rewrites`
+     rules, fetch from R2 at `publications/<userId>/<shortId>/<path>`,
+     apply headers + default CSP, return.
+   - Mode B: call a `proxyToSandbox`-style helper that targets the
      publishing user's sandbox + configured port. Streams request and
-     response, including WebSocket upgrades.
+     response, including WebSocket upgrades. Same CSP defaults apply.
+
+The Access short-circuit at step 2 is the one place the Worker
+intentionally bypasses JWT verification. It MUST be kept narrow:
+exactly the path prefix `/view/`, no other conditions.
 
 ---
 
 ## Security envelope
 
-### Origin isolation
-- `view.loom.yourcompany.com` serves only `/view/*` and NOTHING else.
-- `loom.yourcompany.com` serves `/dash`, `/mcp`, `/dash/oc/*` — and
-  NEVER `/view/*`. A request to `/view/*` on the main origin returns
-  302 to the view origin.
-- Published HTML running on the view origin cannot read cookies,
-  localStorage, or IndexedDB for the main origin — different ETLD+1
-  subdomain, different origin boundary.
+### Same-origin + sandboxed CSP
+- `/view/*` is served from the main hostname. This means published
+  HTML is same-origin with `/dash` and could, in the absence of other
+  controls, read Access session cookies or make authenticated requests
+  to `/mcp`.
+- loom's default response headers on `/view` static content include a
+  **sandbox CSP** directive:
+
+      Content-Security-Policy: sandbox allow-forms allow-scripts allow-popups;
+        default-src 'self';
+        img-src 'self' https: data:;
+        style-src 'self' 'unsafe-inline';
+        script-src 'self' 'unsafe-inline';
+
+  The `sandbox` directive moves the document into a unique opaque
+  origin at render time — the page cannot read cookies, localStorage,
+  or IndexedDB for `loom.yourcompany.com`, and its fetches are treated
+  as cross-origin.
+- The agent can opt out of sandboxing by setting `trusted: true` in
+  the manifest. This is logged to the audit trail with the publishing
+  `userId`. Use for the agent's own HTML reports where you need full
+  page capabilities (service workers, permissions, etc.).
+- Proxy-mode publications inherit the same default CSP unless the
+  upstream sets its own; the Worker never overrides an upstream CSP.
 
 ### Auth
 - `/view/*` is unauthenticated. That is intentional and non-negotiable.
@@ -333,21 +389,16 @@ MCP tools stay for **control operations** (list, rotate, revoke) where
 
 ## Operator configuration
 
-Required additions on top of the base deployment:
-
-### DNS
-
-Add an A/AAAA or CNAME record for `view.loom.yourcompany.com` pointing
-to Cloudflare (proxied). The main hostname's wildcard already covers
-sandbox preview URLs; `view.` is a distinct record so the origin
-separation is real.
+No new DNS or Access setup on top of the base deployment — `/view` is
+a path on the main hostname.
 
 ### `wrangler.jsonc` routes
 
+Unchanged from the base. The same two routes cover `/view`:
+
     "routes": [
-      { "pattern": "loom.yourcompany.com/*",       "zone_name": "..." },
-      { "pattern": "*.loom.yourcompany.com/*",     "zone_name": "..." },
-      { "pattern": "view.loom.yourcompany.com/*",  "zone_name": "..." }
+      { "pattern": "loom.yourcompany.com/*",    "zone_name": "..." },
+      { "pattern": "*.loom.yourcompany.com/*",  "zone_name": "..." }
     ]
 
 ### R2 bucket
@@ -358,14 +409,32 @@ Bound as `PUBLICATIONS` in the Worker.
 
 ### Cloudflare Access
 
-Do **not** put `view.loom.yourcompany.com` behind Access. Configure
-the Access application to cover only the main hostname and wildcard
-sandbox subdomains. The view origin is deliberately public.
+Configure the Access application to cover `loom.yourcompany.com` as
+before. The Worker bypasses JWT verification for `/view/*` paths in
+code — see §How routing works. Access's own rules will still be
+bypassable for `/view` because the Worker short-circuits before
+checking them; this is intentional.
+
+**Important:** if you add Access Bypass rules at the Cloudflare edge
+(in the Access app's policy UI) to allow `/view/*` without a session,
+do NOT rely on those alone — Access bypass rules at the edge can be
+subtly mis-configured. The Worker's in-code short-circuit is the
+source of truth.
 
 ### Secrets
 
 No new secrets; the existing `PLATFORM_JWT_SECRET` signs the sidecar's
 Worker-bound tokens.
+
+### Configuration for stronger isolation (optional)
+
+If you want true origin isolation (the previous design), set the
+`LOOM_VIEW_HOSTNAME` var in `wrangler.jsonc` to a separate hostname
+(e.g. `view.loom.yourcompany.com`), add a DNS record + route for it,
+and keep it out of Access. The view router checks `LOOM_VIEW_HOSTNAME`
+at runtime: when set and the request hostname matches, it skips the
+same-origin CSP sandbox and serves content as-is. When unset (the
+default), it serves from the main hostname with the sandbox CSP on.
 
 ---
 

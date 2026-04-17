@@ -4,54 +4,64 @@ loom
 > A self-hostable, multi-user, agentic-AI sandbox platform for you and your
 > team — built entirely on the Cloudflare Developer Platform.
 
+Three Cloudflare primitives come together to make an isolated
+environment that is, for all practical purposes, capable of
+everything:
+
+| Primitive | What it gives the agent | Typical use |
+|---|---|---|
+| **Sandboxes / Containers** | A persistent Linux workspace per user | build projects, install packages, run servers, work with real files |
+| **Dynamic Workers + Code Mode** | Fast, isolated, network-less JS execution at the edge | parse, transform, compose results, chain operations — all in one millisecond-scale call |
+| **`/view` publishing** | An unguessable public URL (same hostname) for anything the agent produces | share reports, serve live dashboards, proxy dev servers |
+
 **OpenCode is the engine. Cloudflare is the fuel.** Each user in your
-team gets their own isolated Linux sandbox running OpenCode. loom exposes
-every Cloudflare primitive (Workers, Workers for Platforms, R2, KV, D1,
-Durable Objects, Workers AI, Browser Rendering, DNS) as MCP tools that
-OpenCode can call by name. The user types natural language, the agent
-builds, deploys, visualises, and operates — at the edge, in seconds.
+team gets their own Sandbox container running OpenCode, reaches
+through Code Mode when a task needs cheap composition, and publishes
+to `/view` when something's worth sharing. Loom is what wires it all
+together and makes it multi-user.
 
 What you get
 ------------
 
 - **Self-hosted.** Fork the repo, connect it to Workers Builds, point it
   at your Cloudflare account, deploy. No external services, no vendors.
-- **Multi-user from day one.** Every R2 bucket, KV namespace, D1 database,
-  Durable Object, and deployed skill is partitioned per user. Resources
-  are prefixed and ownership is enforced by a per-user registry DO.
+- **Multi-user from day one.** Every R2 object, KV value, D1 row,
+  Durable Object, and published view is partitioned per user.
+  Ownership is enforced by a per-user registry DO.
 - **Cloudflare Access authentication.** Both `/dash` (the React chrome)
   and `/mcp` (the MCP server) sit behind a single Access application.
-  Your team members sign in with Google/Okta/GitHub/anything Access
-  supports. No custom auth code to write.
-- **Unauthenticated `/view` for publishing.** The agent can publish
-  anything — HTML reports, JSON endpoints, live dev servers, mini games
-  — to `view.loom.yourcompany.com/<shortId>`, a dedicated origin with
-  unguessable URLs, per-file response metadata, revocation, and quotas.
-  See [`docs/VIEW.md`](./docs/VIEW.md).
-- **OpenCode as the agent.** Proven, capable, MCP-native coding agent
-  running inside a per-user Sandbox container. BYO provider key (stored
-  per-user, never touched by the Worker).
-- **Every Cloudflare primitive as a tool.** The agent can spin up a D1
-  database, deploy a Worker to Workers for Platforms, render a chart
-  with Browser Rendering, or publish a landing page to a custom domain —
-  all from natural language.
+  Your team members sign in with Google / Okta / GitHub / anything
+  Access supports. No custom auth code to write.
+- **Three-tier compute hierarchy.** The agent picks the cheapest
+  primitive that fits: Code Mode for composition, Sandbox for real
+  work, `/view` for sharing. See [`docs/CODE-MODE.md`](./docs/CODE-MODE.md).
+- **`/view` publishing on the same hostname.** Anything the agent
+  drops into `.publish/` becomes a live URL at
+  `loom.yourcompany.com/view/<shortId>`, with per-file response
+  metadata, revocation, and quotas. See [`docs/VIEW.md`](./docs/VIEW.md).
+- **Primitives are framework, not tools.** R2, D1, KV, Workers AI,
+  Browser Rendering, Worker Loader are wired into loom transparently
+  — the agent never picks them from a menu.
+- **Tools are a user artifact.** When the user likes what the agent
+  built, they templatize it into a named, parameterised prompt
+  (private by default, shareable to a team library). See
+  [`docs/TOOLS.md`](./docs/TOOLS.md).
 - **CI/CD via Workers Builds.** Push to `main`, Cloudflare builds and
   deploys. No GitHub Actions for deploy.
 
 HTTP surfaces
 -------------
 
-loom exposes exactly three public surfaces — same Worker, one
-deployment:
+One Worker, one hostname, three paths:
 
-| Path | Hostname | Auth | Purpose |
-|---|---|---|---|
-| `/dash/*` | `loom.yourcompany.com` | Cloudflare Access | The user-facing React UI. Chrome + iframe of OpenCode's web UI. |
-| `/mcp` | `loom.yourcompany.com` | Access **or** platform JWT | The MCP server. OpenCode in the sandbox talks here. |
-| `/view/<shortId>/...` | `view.loom.yourcompany.com` | **None** — shortId entropy is the access control | Public publishing surface. Serves anything the agent drops in `.publish/`. |
+| Path | Auth | Purpose |
+|---|---|---|
+| `/dash/*` | Cloudflare Access | React UI. Chrome + iframe of OpenCode's web UI. |
+| `/mcp` | Access **or** platform JWT | Minimal MCP surface: user tools, publication control, introspection. |
+| `/view/<shortId>/...` | **None** — shortId entropy is the access control | Public publishing. |
 
-Plus sandbox preview URLs at `*.loom.yourcompany.com`, routed by the
-Sandbox SDK.
+Plus sandbox preview URLs at `*.loom.yourcompany.com` (Sandbox SDK
+routing).
 
 Architecture at a glance
 ------------------------
@@ -61,27 +71,26 @@ Architecture at a glance
     │  ┌───────────────────────────────────────────────────────┐  │
     │  │ /dash  — loom chrome + iframe of OpenCode web UI      │  │
     │  └───────────────────────────────────────────────────────┘  │
-    └──────────┬──────────────────┬───────────────────────────────┘
-               │ Access JWT       │ Access JWT
-               ▼                  ▼
+    └──────────┬──────────────────┬──────────────────┬────────────┘
+               │ Access JWT       │ Access JWT       │ no auth
+               ▼                  ▼                  ▼
     ┌─────────────────────────────────────────────────────────────┐
     │  loom Worker (single deployment)                            │
     │                                                             │
-    │   /dash/*  ──── TanStack Start + Kumo ──── iframe ─────────▶│
-    │   /mcp     ──── MCP tools (Workers / R2 / KV / D1 / AI /   │
-    │                 Browser / DNS / Workers for Platforms)      │
-    │   /view/*  ──── (on view.loom.yourcompany.com, NO AUTH)     │
-    │                 served from R2 or proxied to sandbox port  │
-    │                                                             │
-    │   proxyToSandbox()   ──── *.loom.yourcompany.com preview   │
-    └──────────┬───────────────────┬───────────────────┬─────────┘
-               │                   │                   │
-       ┌───────▼──────┐     ┌──────▼──────┐    ┌──────▼────────┐
-       │ Sandbox DO + │     │ Dispatcher  │    │ Bindings:     │
-       │ Container    │     │ (skills)    │    │ AI, BROWSER,  │
-       │ (OpenCode +  │     │             │    │ R2, KV, D1,   │
-       │  sidecar)    │     │             │    │ PUBLICATIONS  │
-       └──────────────┘     └─────────────┘    └───────────────┘
+    │   /dash/*   ── TanStack Start + Kumo ── iframe ───────────▶ │
+    │   /mcp      ── tools.* · view.* · meta.*                    │
+    │   /view/*   ── Access bypass — static from R2 or proxy      │
+    │   /__code   ── framework-internal: Code Mode / Worker Loader│
+    │   proxyToSandbox() ── *.loom.yourcompany.com preview URLs   │
+    └──┬────────────────┬─────────────────┬────────────────┬──────┘
+       │                │                 │                │
+   ┌───▼────────┐  ┌────▼──────┐  ┌───────▼──────┐  ┌──────▼─────┐
+   │ Sandbox DO │  │ UserRegistry│  │ Worker     │  │ Bindings:  │
+   │ + Container│  │ DO          │  │ Loader     │  │ AI, BROWSER│
+   │ (OpenCode, │  │ (per user)  │  │ (Code Mode)│  │ R2 buckets,│
+   │ sidecars,  │  │             │  │ isolates   │  │ PLATFORM_KV│
+   │ loom-code) │  │             │  │ per call   │  │ PLATFORM_D1│
+   └────────────┘  └─────────────┘  └────────────┘  └────────────┘
 
 Quick start
 -----------
@@ -89,11 +98,9 @@ Quick start
 Prerequisites:
 
 - Cloudflare account on the Workers Paid plan with:
-  - Workers for Platforms enabled
   - Browser Rendering enabled
-  - A custom domain with wildcard DNS, and a `view.` subdomain in your
-    account (e.g. `loom.yourcompany.com`, `*.loom.yourcompany.com`, and
-    `view.loom.yourcompany.com`)
+  - A custom domain with wildcard DNS (e.g. `loom.yourcompany.com` and
+    `*.loom.yourcompany.com`)
 - Cloudflare Access configured on your account (free tier is fine)
 - GitHub account (for Workers Builds to pull from)
 
@@ -103,16 +110,15 @@ Setup:
     # 2. Clone it locally
     git clone git@github.com:<you>/loom.git && cd loom
 
-    # 3. Run the bootstrap script — creates CF resources, namespaces,
-    #    buckets (including loom-publications for /view), KV, D1,
-    #    dispatch namespace, and prints a wrangler.jsonc fragment.
+    # 3. Run the bootstrap script — creates CF resources (R2 buckets,
+    #    KV, D1) and prints a wrangler.jsonc fragment.
     ./scripts/setup
 
     # 4. Configure Cloudflare Access:
     #    - Create ONE Access application for `loom.yourcompany.com`
     #      — covers /dash and /mcp.
-    #    - Do NOT put `view.loom.yourcompany.com` behind Access.
-    #      /view is public by design.
+    #    - /view is on the same hostname; the Worker bypasses Access
+    #      verification for /view/* paths in code.
     #    - Note the Team domain + Application AUD and set them:
     wrangler secret put CF_ACCESS_TEAM_DOMAIN
     wrangler secret put CF_ACCESS_AUD
@@ -128,20 +134,19 @@ Repository layout
 
     loom/
     ├── apps/
-    │   ├── web/          THE Worker — serves /dash, /mcp, /view
-    │   └── outbound/     egress control Worker for user-deployed skills
+    │   └── web/          THE Worker — serves /dash, /mcp, /view, /__code
     ├── packages/
     │   └── shared-types/ types shared across the repo
     ├── docs/
     │   ├── SPEC.md            architecture + build order
-    │   ├── MCP-TOOLS.md       MCP tool catalog contract
-    │   ├── MULTI-TENANCY.md   how isolation actually works
+    │   ├── CODE-MODE.md       Dynamic Workers / Worker Loader integration
+    │   ├── TOOLS.md           user-created, shareable tools
     │   ├── VIEW.md            the /view publishing surface
+    │   ├── MULTI-TENANCY.md   how isolation actually works
     │   ├── DEPLOYMENT.md      Workers Builds setup + secrets
     │   └── AGENTS.md          instructions for coding agents
-    ├── Dockerfile        sandbox container (OpenCode + tools + sidecar)
-    ├── scripts/          setup / start / deploy
-    └── wrangler.jsonc    single deployment config
+    ├── Dockerfile        sandbox container (OpenCode + sidecars)
+    └── scripts/          setup / start / deploy
 
 License
 -------

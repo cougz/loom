@@ -1,8 +1,8 @@
 # AGENTS.md — Instructions for AI coding agents working on loom
 
 This file is read automatically by Claude Code, OpenCode, Cursor, and
-other agentic coding tools when operating in this repository. Follow it
-closely — it captures non-obvious decisions that keep loom coherent.
+other agentic coding tools operating in this repository. Follow it
+closely — it captures the non-obvious decisions that keep loom coherent.
 
 ---
 
@@ -11,18 +11,28 @@ closely — it captures non-obvious decisions that keep loom coherent.
 A self-hostable, **multi-user**, agentic-AI sandbox platform built on
 the Cloudflare Developer Platform:
 
-1. Team authenticates via **Cloudflare Access** (on both `/dash` and
-   `/mcp`).
+1. Team authenticates via **Cloudflare Access** (on `/dash` and `/mcp`;
+   `/view` is deliberately public).
 2. Each user gets an isolated Sandbox container running **OpenCode**.
-3. loom's Worker hosts `/mcp` — an **MCP server** exposing every
-   Cloudflare primitive (Workers, R2, KV, D1, DO, Workers AI, Browser
-   Rendering, DNS, Workers for Platforms) as tools OpenCode can call.
-4. Every persistent resource is **partitioned by user** — see
-   `MULTI-TENANCY.md`.
-5. Deployed via **Workers Builds** — push to `main`, Cloudflare
-   builds + deploys.
+3. Cloudflare primitives (Containers/Sandboxes, **Dynamic Workers via
+   Worker Loader → Code Mode**, R2, D1, KV, Workers AI, Browser
+   Rendering) are **integrated into the framework** — not exposed as a
+   catalog of MCP tools. The agent does not pick `r2_put_object` from a
+   menu; loom routes persistence, inference, rendering, and composition
+   through primitives transparently.
+   The agent reaches for compute through a three-tier hierarchy: Code
+   Mode (ms, no-network isolates) → Sandbox (persistent Linux) →
+   `/view` (public publishing). See [`CODE-MODE.md`](./CODE-MODE.md).
+4. **Tools** are a user artifact: a parameterised prompt + optional
+   workspace attachments, templatized from a completed agent trajectory.
+   Private by default, explicitly shareable to a team library. See
+   [`TOOLS.md`](./TOOLS.md).
+5. **`/view`** is the public publishing path on the main hostname. See
+   [`VIEW.md`](./VIEW.md).
+6. Deployed via **Workers Builds** — push to `main`, Cloudflare builds
+   and deploys.
 
-**OpenCode is the agent. loom is the toolbelt.** Do not build a custom
+**OpenCode is the agent. loom is the framework.** Do not build a custom
 agent loop. Do not reimplement chat. Do not touch OpenCode's provider
 config except by writing to `~/.opencode/` inside the container at
 startup.
@@ -31,50 +41,65 @@ startup.
 
 ## Architecture invariants
 
-Treat these as hard rules. Violating any of them is a blocker.
+Treat these as hard rules. Violating any is a blocker.
 
-1. **Single Worker deployment.** Everything ships from `apps/web` via one
-   `wrangler deploy`. Only exception: `apps/outbound` (egress Worker).
+1. **Single Worker deployment.** Everything ships from `apps/web` via
+   one `wrangler deploy`. No other Workers.
 2. **`/dash` and `/mcp` are behind Cloudflare Access. `/view` is NOT.**
-   The `view.loom.yourcompany.com` origin is deliberately public —
-   shortId entropy is the access control. Never route `/view` traffic
-   through Access verification.
-3. **`userId` comes only from the Access JWT or platform JWT.** Never
-   from a request body, header (other than Access / Authorization),
-   or URL param. For `/view` the `userId` comes from the
-   `publications` row looked up by `shortId` — still never from the
-   request.
-4. **Every resource is user-scoped.** Prefix `loom-<userId>-*`, or key
-   prefix `users/<userId>/*` for shared-binding partitioning. Enforced
-   by `apps/web/src/mcp/lib/names.ts` + the `UserRegistry` DO.
+   The Worker short-circuits Access verification for path prefix
+   `/view/`. Keep that short-circuit narrow.
+3. **`userId` comes only from a verified JWT.** Access JWT on `/dash`
+   and `/mcp`; platform JWT for sandbox → `/mcp`. For `/view`, `userId`
+   comes from the `publications` row looked up by shortId — still never
+   from the request.
+4. **Every persistent resource is user-scoped.** Key prefix
+   `users/<userId>/*` or row-level `user_id` column. Enforced via
+   `apps/web/src/server/keys.ts` and the query helpers.
 5. **OpenCode lives only inside the Sandbox container.** Never as a
    Worker dep, never outside the container.
-6. **MCP tools run in the Worker, not the sandbox.** The sandbox reaches
-   out via HTTPS; the Worker executes with loom's API token.
-7. **User's provider key never leaves the container.** OpenCode calls
-   providers directly. The Worker never sees model traffic.
-8. **Cloudflare API token is loom's, not the user's.** Tools drive the
-   CF API on behalf of the user; safety is by name prefix + registry.
-9. **No GitHub Actions for deploy.** Workers Builds deploys from
-   `main`. CI for lint/tests is fine, but the deploy happens on CF.
-10. **Publishing to `/view` is filesystem-driven, not MCP-driven.**
-    The agent writes to `/home/user/workspace/.publish/<alias>/`; a
-    sidecar syncs to R2. MCP tools (`view_list`, `view_rotate`,
-    `view_revoke`, …) are for control operations only.
+6. **Primitives are framework-integrated, not MCP tools.** There are
+   no `r2_*`, `kv_*`, `d1_*`, `ai_*`, `browser_*`, `dns_*` MCP tools.
+   If the agent needs rendering, inference, or composition, loom
+   provides small shell helpers inside the container (`loom-ai`,
+   `loom-render`, `loom-code`) that wrap the bindings via
+   framework-level Worker endpoints — not via `/mcp`.
+   `loom-code` in particular is the agent's primary tool for parsing /
+   transforming / composing — it runs JS in a Worker Loader isolate
+   with no network, 30s timeout, scoped to the invoking user. See
+   [`CODE-MODE.md`](./CODE-MODE.md).
+7. **The MCP surface is minimal and tool-centric.** It exposes
+   user-tool operations (`tools.list`, `tools.invoke`,
+   `tools.propose_templatize`, `tools.get_run`), publication control
+   (`view.*`), and introspection (`whoami`, `workspace.*`). Nothing
+   else. Adding a primitive-level MCP tool is a design review, not a
+   PR.
+8. **User's provider key never leaves the container.** OpenCode calls
+   model providers directly. The Worker never sees model traffic.
+9. **Cloudflare API token is loom's, not the user's.** Used by
+   framework-level provisioning only. Never exposed to the agent.
+10. **No GitHub Actions for deploy.** Workers Builds deploys from
+    `main`. CI for lint/tests is fine, deploy happens on CF.
+11. **Publishing to `/view` is filesystem-driven.** The agent writes to
+    `/home/user/workspace/.publish/<alias>/`; a sidecar syncs to R2.
+    MCP operations on `view.*` are for control only.
+12. **No Workers for Platforms in v1.** Tools are not deployed Workers.
+    They are prompt templates. If you find yourself reaching for a
+    dispatch namespace, stop and open a design issue.
 
 ---
 
 ## Multi-tenancy: the most important doc after this one
 
-Read [`docs/MULTI-TENANCY.md`](./MULTI-TENANCY.md) before adding any MCP
-tool. It defines the ownership guardrail every mutating tool must follow.
+Read [`docs/MULTI-TENANCY.md`](./MULTI-TENANCY.md) before adding any
+framework feature or MCP operation. It defines the guardrail every
+mutating operation must follow.
 
-TL;DR:
+TL;DR (four-step pattern):
 
-    1. fullName = ctx.names.<kind>(name)          // loom-<userId>-<name>
-    2. ownership guard                            // ctx.userRegistry.isOwned(...)
-    3. CF API call using fullName
-    4. register / unregister in UserRegistry
+    1. fullKey = ctx.keys.<kind>(...)         // user-prefixed
+    2. ownership guard                        // DO or D1 helper check
+    3. primitive operation with fullKey
+    4. registry update
 
 Skipping any step is a security bug.
 
@@ -86,44 +111,39 @@ Skipping any step is a security bug.
     ├── apps/web/                   THE Worker. Everything the user touches.
     │   ├── wrangler.jsonc
     │   └── src/
-    │       ├── worker-entry.ts     fetch handler — Access + routing
+    │       ├── worker-entry.ts     fetch handler — router, Access, /view bypass
     │       ├── routes/             TanStack Start routes under /dash
     │       ├── components/         React + Kumo
     │       ├── lib/                client-side helpers (no bindings)
-    │       ├── server/             server functions — auth, JWKS, proxies
+    │       ├── server/             server fns — auth, JWKS, keys, db, proxies
+    │       │   ├── keys.ts         user-prefixed key/name helpers (CRITICAL)
+    │       │   ├── db.ts           D1 query helper with user_id enforcement
+    │       │   └── auth.ts         Access + platform JWT verification
     │       ├── durable-objects/    UserRegistry, Sandbox re-export
     │       ├── view/               /view router — static + proxy modes
-    │       │   ├── router.ts       top-level handler for view.* host
-    │       │   ├── static.ts       R2-backed static serving
-    │       │   ├── proxy.ts        sandbox port proxy + WS forwarding
-    │       │   └── manifest.ts     parsing + defaults
-    │       ├── mcp/                THE MCP server
-    │       │   ├── server.ts       createMcpHandler setup
-    │       │   ├── types.ts        LoomTool + context types
-    │       │   ├── context.ts      buildContext(userId, env)
-    │       │   ├── lib/            cf-api client, names, guards
-    │       │   └── tools/
-    │       │       ├── index.ts    catalog registration
-    │       │       ├── workers/
-    │       │       ├── r2/
-    │       │       ├── kv/
-    │       │       ├── d1/
-    │       │       ├── ai/
-    │       │       ├── browser/
-    │       │       ├── dns/
-    │       │       ├── routes/
-    │       │       ├── view/       view_list, view_rotate, view_revoke, …
-    │       │       └── meta/
+    │       │   ├── router.ts
+    │       │   ├── static.ts
+    │       │   ├── proxy.ts
+    │       │   └── manifest.ts
+    │       ├── mcp/                minimal MCP server — tool ops + view ops
+    │       │   ├── server.ts
+    │       │   ├── context.ts
+    │       │   └── operations/
+    │       │       ├── tools.ts    tools.list / invoke / propose_templatize / get_run
+    │       │       ├── view.ts     view.list / rotate / revoke / ...
+    │       │       └── meta.ts     whoami / workspace.snapshot / workspace.restore
     │       └── sandbox-app/        files baked into the container
     │           ├── opencode.jsonc
     │           ├── tui.jsonc
-    │           └── loom-publish-sidecar/   watches .publish/ → syncs to R2
+    │           ├── loom-publish-sidecar/   watches .publish/ → R2
+    │           ├── loom-code/              CLI for Code Mode (Worker Loader)
+    │           ├── loom-ai/                CLI wrapper over the AI helper
+    │           └── loom-render/            CLI wrapper over Browser Rendering
     │
-    ├── apps/outbound/              egress Worker for user-deployed skills
-    ├── packages/shared-types/      types shared between web and outbound
-    ├── docs/                       SPEC, MCP-TOOLS, MULTI-TENANCY, DEPLOYMENT, AGENTS
-    ├── Dockerfile                  sandbox container (OpenCode + tools)
-    └── scripts/                    setup / start / deploy / teardown
+    ├── packages/shared-types/      types shared across the repo
+    ├── docs/                       SPEC, TOOLS, MULTI-TENANCY, VIEW, DEPLOYMENT, AGENTS
+    ├── Dockerfile                  sandbox container (OpenCode + tools + sidecars)
+    └── scripts/                    setup / start / deploy
 
 ---
 
@@ -156,64 +176,58 @@ Skipping any step is a security bug.
 
 - `strict: true`, `noUncheckedIndexedAccess: true`,
   `verbatimModuleSyntax: true`.
-- Prefer `type` over `interface` except for declaration merging.
+- Prefer `type` over `interface`.
 - Export types with `export type { Foo }`.
-- No `any`. Use `unknown` + narrowing. `@ts-expect-error` needs a comment.
+- No `any`. `unknown` + narrowing. `@ts-expect-error` needs a comment.
 
-### MCP tool anatomy
+### MCP operation shape
 
-Every tool follows this shape:
+Every MCP operation follows the same pattern. The catalog lives in
+`apps/web/src/mcp/operations/` and is tiny — see AGENTS invariant #7.
 
-    // apps/web/src/mcp/tools/r2/create-bucket.ts
+    // apps/web/src/mcp/operations/tools.ts
     import { z } from "zod";
-    import { defineTool } from "../../types";
+    import { defineMcpOp } from "../define";
 
-    export const r2CreateBucket = defineTool({
-      name: "r2_create_bucket",
-      description: "Create a new R2 bucket owned by the current user.",
-      input: z.object({
-        name: z.string().regex(/^[a-z0-9][a-z0-9-]{1,50}$/),
-      }),
-      async execute({ name }, ctx) {
-        const fullName = ctx.names.r2Bucket(name);
-        if (await ctx.userRegistry.isOwned("r2", fullName)) {
-          return { ok: false, error: "Bucket already exists.", code: "EXISTS" };
-        }
-        await ctx.cfApi.r2.createBucket(fullName);
-        await ctx.userRegistry.registerResource("r2", fullName);
-        return { ok: true, data: { name: fullName } };
+    export const toolsList = defineMcpOp({
+      name: "tools.list",
+      description: "List the invoker's private tools and installed shared tools.",
+      input: z.object({ scope: z.enum(["all", "private", "shared"]).default("all") }),
+      async execute({ scope }, ctx) {
+        const ownTools = await ctx.userRegistry.listTools();
+        const installed = scope === "private" ? [] : await ctx.db.listInstalledTools(ctx.userId);
+        return { ok: true, data: { own: ownTools, installed } };
       },
     });
 
 Rules:
 - Validate ALL input with Zod.
 - Return `{ ok: true, data }` or `{ ok: false, error, code? }`.
-- Never throw from `execute` — return a failure result.
+- Never throw.
 - Never read bindings directly; receive them via `ctx`.
-- Never accept `userId` as an input — it comes from `ctx`.
+- Never accept `userId` as input — it comes from `ctx`.
 
 ### React
 
 - Functional components only.
-- Kumo components first. Check: `npx @cloudflare/kumo ls` and
+- Kumo components first. `npx @cloudflare/kumo ls`;
   `npx @cloudflare/kumo doc <ComponentName>`.
-- No CSS modules / styled-components. Tailwind utilities + Kumo
-  semantic tokens only.
+- Tailwind utilities + Kumo semantic tokens. No CSS modules / styled.
 - Server state via TanStack Query. Client state via `useState`.
-  No Redux, no Zustand.
 
 ### Routing
 
 - TanStack Start file-based routing under `apps/web/src/routes/`.
-- All routes under `/dash/*` — `/` redirects to `/dash`.
+- All authenticated routes under `/dash/*`. `/` redirects to `/dash`.
 - Auth guard in `__root.tsx` — redirect to Access login if no JWT.
 
 ### Tests
 
-- Every MCP tool: unit test for input validation + happy path + error
-  path, with mocked `ctx`.
+- Every MCP operation: unit test for input validation + happy path +
+  error path, with mocked `ctx`.
 - Integration tests via `vitest` + `@cloudflare/vitest-pool-workers`
   when bindings are needed.
+- Tenancy tests: user A's request never returns user B's data.
 
 ---
 
@@ -224,32 +238,32 @@ Before starting a task:
 1. Read the relevant SPEC.md section and the milestone this belongs to.
 2. If the change crosses more than 3 directories, write a plan and
    stop for review.
-3. If the change affects tenancy (new tool, new resource type, new
-   binding), re-read MULTI-TENANCY.md.
+3. If the change affects tenancy (new framework integration, new MCP
+   operation, new D1 table, new R2 prefix), re-read
+   [`MULTI-TENANCY.md`](./MULTI-TENANCY.md).
 
 Commands:
 
-    pnpm install                      # once
-    pnpm dev                          # wrangler dev (local)
-    pnpm lint                         # biome check
-    pnpm lint:fix                     # biome check --write
-    pnpm typecheck                    # tsc --noEmit across workspace
-    pnpm test                         # vitest across workspace
-    pnpm --filter @loom/web test      # scoped test
+    pnpm install
+    pnpm dev          # wrangler dev (local)
+    pnpm lint         # biome check
+    pnpm lint:fix
+    pnpm typecheck
+    pnpm test
+    pnpm --filter @loom/web test
 
-Do NOT run `pnpm --filter @loom/web deploy` to test a change. Workers
-Builds deploys on merge to `main`. Use a preview branch if you need a
-live test.
+Do NOT run `pnpm deploy` to test a change. Workers Builds deploys on
+merge to `main`. Use a preview branch for live tests.
 
 Before opening a PR:
 
 - [ ] `pnpm lint && pnpm typecheck && pnpm test` all pass
-- [ ] New MCP tools documented in `docs/MCP-TOOLS.md`
-- [ ] New resource types documented in `docs/MULTI-TENANCY.md`
+- [ ] New MCP operations (if any) justified in PR description — they
+      should be rare
+- [ ] New tenancy surfaces documented in `docs/MULTI-TENANCY.md`
 - [ ] New bindings added to `apps/web/wrangler.jsonc`
-- [ ] No new entries in `package.json#dependencies` without mention in
-      PR description
-- [ ] Ownership guard checked for every mutating tool
+- [ ] Ownership guard in place for every mutating operation
+- [ ] No new entries in `package.json#dependencies` without mention
 
 ---
 
@@ -260,33 +274,30 @@ Before opening a PR:
 - Never hard-code API keys, tokens, zone IDs, account IDs.
 - Full list in `.env.example` at the repo root.
 
-Required secrets in the loom Worker:
+Required secrets:
 
     CF_ACCESS_TEAM_DOMAIN      yourcompany.cloudflareaccess.com
     CF_ACCESS_AUD              Access application AUD tag
     CF_ACCOUNT_ID              wrangler whoami
-    CF_API_TOKEN               token with all needed scopes
-    PLATFORM_JWT_SECRET        HMAC secret for session-scoped MCP tokens
+    CF_API_TOKEN               framework-level provisioning (not agent)
+    PLATFORM_JWT_SECRET        sandbox → /mcp JWT HMAC secret
 
-OpenCode inside the container reads its provider key from its own
-config, which loom writes at container start after fetching from the
-UserRegistry DO. The Worker never logs or proxies the key.
+OpenCode in the container reads its provider key from its own config,
+which loom writes at container start after fetching from the
+`UserRegistry` DO. The Worker never logs or proxies the key.
 
 ---
 
 ## Sandbox-specific rules
 
 - Sandbox ID = `userId`. Same ID across sessions → persistent container.
-- Always use `keepAlive: true` when getting the sandbox. Heartbeat every
-  30s from the `UserRegistry` DO alarm.
-- Transport MUST be WebSocket (`SANDBOX_TRANSPORT=ws`). HTTP transport
-  hits the 1k subrequest limit per agent turn.
-- `proxyToSandbox()` MUST be called first in the fetch handler, before
-  Access auth — preview URLs authenticate via token in the hostname, not
-  via Access.
+- `keepAlive: true` always. Heartbeat every 30s from `UserRegistry`
+  alarm.
+- Transport MUST be WebSocket (`SANDBOX_TRANSPORT=ws`).
+- `proxyToSandbox()` called first in the fetch handler for
+  `*.loom.yourcompany.com` — preview URLs auth via hostname token.
 - `/home/user/workspace` is the source of truth. Snapshot to R2 after
-  any turn that touches it (debounced 5s). Key:
-  `users/<userId>/snapshots/v<N>.tar.gz`.
+  any turn that touches it (debounced 5s).
 
 ---
 
@@ -297,13 +308,13 @@ UserRegistry DO. The Worker never logs or proxies the key.
 
 Discovery:
 
-    npx @cloudflare/kumo ls              # list all components
-    npx @cloudflare/kumo doc Dialog      # show Dialog docs
+    npx @cloudflare/kumo ls
+    npx @cloudflare/kumo doc Dialog
 
 Rules:
-- Import `@cloudflare/kumo/styles` ONCE in the root layout.
+- Import `@cloudflare/kumo/styles` ONCE in root layout.
 - Use Kumo semantic color tokens. No hard-coded hex.
-- Dark mode is handled by Kumo's tokens.
+- Dark mode handled by Kumo's tokens.
 
 ---
 
@@ -311,10 +322,10 @@ Rules:
 
 - One logical change per PR.
 - Title: `<scope>: <imperative summary>`, e.g.
-  `mcp: add r2_list_objects tool`.
-- Description must cover: what, why, how to test, milestone in SPEC.md.
-- If the PR adds an MCP tool, include a `curl` or
-  `npx @modelcontextprotocol/inspector` demo.
+  `mcp: add tools.propose_templatize`.
+- Description: what, why, how to test, milestone in SPEC.md.
+- If the PR adds an MCP operation, explain why the framework cannot
+  handle it transparently.
 - If the PR changes tenancy, explicitly call out the guardrails kept
   or added.
 
@@ -322,11 +333,12 @@ Rules:
 
 ## When unsure
 
-1. Check SPEC.md for architecture.
-2. Check MCP-TOOLS.md for tool-catalog questions.
-3. Check MULTI-TENANCY.md for isolation questions.
-4. Check VIEW.md for anything about `/view` / publishing / the sidecar.
-5. Check DEPLOYMENT.md for secrets / Workers Builds questions.
-6. Check this file for coding conventions.
-7. If still unsure, open a GitHub issue tagged `design-question`
-   rather than guessing. It is cheaper to clarify than to refactor.
+1. Check [`SPEC.md`](./SPEC.md) for architecture.
+2. Check [`CODE-MODE.md`](./CODE-MODE.md) for Code Mode / Worker Loader.
+3. Check [`TOOLS.md`](./TOOLS.md) for tool-related questions.
+4. Check [`MULTI-TENANCY.md`](./MULTI-TENANCY.md) for isolation.
+5. Check [`VIEW.md`](./VIEW.md) for `/view` / publishing / sidecar.
+6. Check [`DEPLOYMENT.md`](./DEPLOYMENT.md) for secrets + Workers Builds.
+7. Check this file for conventions.
+8. If still unsure, open an issue tagged `design-question`. It is
+   cheaper to clarify than to refactor.

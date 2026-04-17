@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # loom bootstrap
 #
-# Creates the Cloudflare resources loom needs (dispatch namespace, R2
-# buckets, KV namespace, D1 database) and prints a wrangler.jsonc
-# fragment with the IDs filled in. Idempotent — safe to re-run.
+# Creates the Cloudflare resources loom needs (R2 buckets, KV namespace,
+# D1 database) and prints a wrangler.jsonc fragment with the IDs filled
+# in. Idempotent — safe to re-run.
 #
 # Prerequisites:
 #   - wrangler logged in (`wrangler login`)
@@ -26,8 +26,7 @@ pnpm install --frozen-lockfile
 
 log "Provisioning Cloudflare resources. This is idempotent."
 # TODO(M1): actually call wrangler commands to create:
-#   - dispatch namespace: loom-skills
-#   - R2 buckets:         loom-workspace-snapshots, loom-skill-source
+#   - R2 buckets:         loom-workspace-snapshots, loom-publications
 #   - KV namespace:       loom-platform
 #   - D1 database:        loom-platform
 # ...then print a wrangler.jsonc fragment with the discovered IDs.
@@ -37,9 +36,7 @@ cat <<'EOF'
 Not implemented yet — this is the M0 stub. Until M1 lands, provision
 resources manually with:
 
-    wrangler dispatch-namespace create loom-skills
     wrangler r2 bucket create loom-workspace-snapshots
-    wrangler r2 bucket create loom-skill-source
     wrangler r2 bucket create loom-publications
     wrangler kv:namespace create loom-platform
     wrangler d1 create loom-platform

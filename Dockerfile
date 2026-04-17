@@ -59,6 +59,19 @@ COPY sandbox-app/tui.jsonc      ${OPENCODE_DIR}/tui.jsonc
 COPY sandbox-app/loom-publish-sidecar/loom-publish /usr/local/bin/loom-publish
 RUN chmod +x /usr/local/bin/loom-publish
 
+# loom-code — the agent's primary tool for cheap composition. POSTs a JS
+# snippet to the Worker, which runs it in a Worker Loader isolate
+# (no network, 30s timeout, loom.* namespace only). See docs/CODE-MODE.md.
+COPY sandbox-app/loom-code/loom-code             /usr/local/bin/loom-code
+RUN chmod +x /usr/local/bin/loom-code
+
+# loom-ai, loom-render — CLI wrappers over Workers AI and Browser
+# Rendering. Each is a thin HTTP client to the Worker's framework
+# endpoints (not /mcp) authenticated with the platform JWT.
+COPY sandbox-app/loom-ai/loom-ai                 /usr/local/bin/loom-ai
+COPY sandbox-app/loom-render/loom-render         /usr/local/bin/loom-render
+RUN chmod +x /usr/local/bin/loom-ai /usr/local/bin/loom-render
+
 # Ports OpenCode + common preview servers use
 EXPOSE 4096 5173 3000 8000 8080
 
@@ -74,3 +87,5 @@ RUN git init -q ${LOOM_WORKSPACE} \
 # or the sidecar here. On first user interaction the Worker calls:
 #   sandbox.startProcess("opencode serve --port 4096")
 #   sandbox.startProcess("loom-publish --watch /home/user/workspace/.publish")
+# `loom-code`, `loom-ai`, and `loom-render` are short-lived CLIs — the
+# agent invokes them per call, no long-running process.

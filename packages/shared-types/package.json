@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Types shared between the web Worker and the outbound Worker.",
+  "description": "Types shared across the loom Worker.",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {

@@ -1,8 +1,8 @@
 {
   "$schema": "https://unpkg.com/wrangler/config-schema.json",
 
-  // Single Worker deployment. Hosts /dash, /mcp, sandbox proxy, and
-  // preview URL routing. See docs/DEPLOYMENT.md.
+  // Single Worker deployment. Hosts /dash, /mcp, /view, and the sandbox
+  // preview-URL proxy. See docs/DEPLOYMENT.md.
   "name": "loom",
   "main": "src/worker-entry.ts",
   "compatibility_date": "2025-12-01",
@@ -33,28 +33,23 @@
     }
   ],
 
-  // Workers for Platforms — one Worker per user-deployed skill.
-  // All egress from user skills goes through the outbound Worker.
-  "dispatch_namespaces": [
-    {
-      "binding": "DISPATCHER",
-      "namespace": "loom-skills",
-      "outbound": { "service": "loom-outbound" }
-    }
-  ],
-
   // Workers AI (model inference) and Browser Rendering bindings.
   "ai": { "binding": "AI" },
   "browser": { "binding": "BROWSER" },
 
+  // Worker Loader binding — powers Code Mode. The sandbox's `loom-code`
+  // CLI POSTs JS snippets to the Worker, which loads them in a fresh
+  // isolate via env.LOADER with globalOutbound:null. See docs/CODE-MODE.md.
+  "worker_loaders": [
+    { "binding": "LOADER" }
+  ],
+
   // R2 — shared buckets for platform state. User-created buckets (via
   // the r2_create_bucket MCP tool) are separate, per-user.
   //   WORKSPACE_SNAPSHOTS   tarballs of each user's workspace
-  //   SKILL_SOURCE          source of user-deployed skills
   //   PUBLICATIONS          content served by /view/<shortId>/... (see VIEW.md)
   "r2_buckets": [
     { "binding": "WORKSPACE_SNAPSHOTS", "bucket_name": "loom-workspace-snapshots" },
-    { "binding": "SKILL_SOURCE",        "bucket_name": "loom-skill-source" },
     { "binding": "PUBLICATIONS",        "bucket_name": "loom-publications" }
   ],
 
@@ -74,19 +69,15 @@
 
   "vars": {
     "SANDBOX_TRANSPORT": "ws",
-    "DISPATCH_NAMESPACE": "loom-skills",
-    "LOOM_HOSTNAME": "loom.yourcompany.com",
-    "LOOM_VIEW_HOSTNAME": "view.loom.yourcompany.com"
+    "LOOM_HOSTNAME": "loom.yourcompany.com"
   },
 
   // Routes:
-  //   loom.yourcompany.com/*        main hostname (/dash, /mcp) — behind Access
-  //   *.loom.yourcompany.com/*      sandbox preview URLs
-  //   view.loom.yourcompany.com/*   /view publishing surface — PUBLIC (no Access)
+  //   loom.yourcompany.com/*      main hostname (/dash, /mcp, /view) — /dash and /mcp behind Access
+  //   *.loom.yourcompany.com/*    sandbox preview URLs (token in hostname)
   "routes": [
-    { "pattern": "loom.yourcompany.com/*",       "zone_name": "yourcompany.com" },
-    { "pattern": "*.loom.yourcompany.com/*",     "zone_name": "yourcompany.com" },
-    { "pattern": "view.loom.yourcompany.com/*",  "zone_name": "yourcompany.com" }
+    { "pattern": "loom.yourcompany.com/*",    "zone_name": "yourcompany.com" },
+    { "pattern": "*.loom.yourcompany.com/*",  "zone_name": "yourcompany.com" }
   ],
 
   "migrations": [

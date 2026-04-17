@@ -1,12 +1,12 @@
 # Multi-tenancy in loom
 
-loom is designed to be run by a team for a team. Every resource — files,
-databases, KV values, deployed Workers, Durable Objects, preview URLs,
-provider keys — belongs to exactly one user. This document is the
-**contract** that keeps tenants isolated.
+loom is designed to be run by a team for a team. Every persistent
+resource — files, workspace, database rows, tool attachments,
+publications, provider keys — belongs to exactly one user. This document
+is the **contract** that keeps tenants isolated.
 
-If you are adding a feature or a new MCP tool, you MUST read this file
-before opening a PR.
+If you are adding a feature, a new framework integration, or a new MCP
+operation, read this file first.
 
 ---
 
@@ -18,234 +18,159 @@ Cloudflare Access JWT `sub` claim.
     accessJwt.sub → sha256 → base32hex(0, 20).toLowerCase()
     → e.g. "7f3c1a2b9d4e5a6b7c8d"
 
-The `sub` claim is stable per-identity-per-Access-application, so
-`userId` is stable for a given team member across sessions and devices.
-The Access `email` is stored alongside for display only — never used
-as an identifier.
-
 Every server-side operation receives `userId` from the request context,
 never from the request body. It is derived exclusively from the verified
-JWT.
+JWT (Access or platform).
 
 ---
 
-## Resource naming
+## Partitioning by tenant key
 
-All user-created resources are prefixed `loom-<userId>-<name>`:
+### Durable Objects
 
-| Kind | Name | Example |
-|---|---|---|
-| Worker (skill) | `loom-<userId>-<name>` | `loom-7f3c1a2b-hn_digest` |
-| R2 bucket | `loom-<userId>-<name>` | `loom-7f3c1a2b-assets` |
-| KV namespace | `loom-<userId>-<name>` | `loom-7f3c1a2b-cache` |
-| D1 database | `loom-<userId>-<name>` | `loom-7f3c1a2b-events` |
+| DO | Scope |
+|---|---|
+| `UserRegistry` | one per `userId` (DO id = `userId`) |
+| `Sandbox` | one per `userId` (same id, so the container is persistent) |
 
-The prefix is enforced in `apps/web/src/mcp/lib/names.ts` — tools never
-build names by string concatenation, they always call
-`ctx.names.worker(name)` and friends.
+### R2 — shared buckets, partitioned by key prefix
+
+| Bucket | Key pattern |
+|---|---|
+| `loom-workspace-snapshots` | `users/<userId>/snapshots/v<N>.tar.gz` |
+| `loom-publications` | `publications/<userId>/<shortId>/manifest.json` and `.../content/<path>` |
+| `loom-tool-attachments` | `users/<userId>/tools/<toolId>/attachments/<id>` |
+
+Keys are always constructed via `ctx.keys.<kind>(...)`, never by
+concatenation. Helpers live in `apps/web/src/server/keys.ts`.
+
+### KV — one namespace, keyed by user
+
+| Key | Purpose |
+|---|---|
+| `user:<userId>:ratelimit:<category>` | per-user rate-limit token buckets |
+| `user:<userId>:provider-key-enc` | (legacy; moved to DO) |
+| `view:manifest:<shortId>` | per-publication manifest cache (60s) |
+| `view:ratelimit:<shortId>` | per-publication rate limit |
+| `config:*` | platform-wide config (admin-managed) |
+| `admin:users` | set of known userIds for admin listing |
+
+### D1 — one platform database, every row has `user_id`
+
+Every table has a `user_id` column. Every query goes through
+`ctx.db.query(sql, { userId, ...params })`, which prepends
+`WHERE user_id = ?` automatically.
+
+Tables (v1):
+
+    resources       (user_id, type, name, created_at, metadata)
+    audit_log       (user_id, actor, action, target, at)
+    publications    (short_id PK, user_id, alias, mode, ...)
+    shared_tools    (tool_id PK, author_user_id, version, name, ...)
+    tool_installs   (tool_id, installer_user_id, installed_version, installed_at)
+
+### Per-user private state — `UserRegistry` DO (SQLite)
+
+    tools           (id PK, name, description, prompt, parameters_json,
+                     attachments_json, visibility, version, created_at,
+                     updated_at, invocation_count)
+    tool_runs       (id PK, tool_id, tool_version, parameters_json,
+                     started_at, completed_at, status, workspace_path,
+                     publications_json, exit_message)
+    provider_keys   (provider PK, encrypted_key)
+    resources       (type, name, created_at, PRIMARY KEY (type, name))
+    session         (opencode_port, last_active_at)
+
+Why DO + D1 both? DO gives strong consistency for the owning user's
+writes. D1 gives cross-user visibility for admin and shared-library
+surfaces. Writes go to DO first, async-mirrored to D1 when the data is
+part of a team-visible surface (shared tools, publication index, audit).
 
 ---
 
-## Shared bindings, partitioned by key
+## Tools — the most sensitive multi-tenant surface
 
-Some bindings are shared by the whole Worker and used for platform-
-internal state:
+Tools are user-created artifacts. They are the only thing explicitly
+designed to cross the tenant boundary (via team sharing).
 
-### `WORKSPACE_SNAPSHOTS` (R2 bucket)
-Workspace tarballs for all users live here.
+### Private tools
 
-    users/<userId>/snapshots/v<N>.tar.gz
+- Stored in the author's `UserRegistry` DO.
+- Attachments in R2 under `users/<authorId>/tools/<toolId>/...`.
+- **Invisible** to everyone but the author. `tools.list` called by user
+  B never returns user A's private tools. No cross-user listing, no
+  counters, no timing side-channels.
 
-Enforce by always constructing keys via `ctx.keys.workspaceSnapshot(userId, version)`.
+### Team-shared tools
 
-### `SKILL_SOURCE` (R2 bucket)
-Source code of deployed skills, for audit and restore.
+When user A flips a tool to team visibility:
 
-    users/<userId>/skills/<name>.mjs
+1. The author's tool record stays in A's `UserRegistry`.
+2. A row is written to `PLATFORM_D1.shared_tools` (indexed by `team_id`
+   — currently a single-team deployment, so just a constant).
+3. The R2 attachments are duplicated to a shared path
+   `shared/tools/<toolId>/v<N>/attachments/<id>` so installers can
+   fetch them without reading user A's R2 namespace.
+4. `/dash/library` lists shared tools across the team.
 
-### `PUBLICATIONS` (R2 bucket)
-Content served by `/view/<shortId>/...`. See [`VIEW.md`](./VIEW.md).
+### Installing a shared tool (user B installs user A's tool)
 
-    publications/<userId>/<shortId>/manifest.json
-    publications/<userId>/<shortId>/content/<path>
+1. Read the shared row from `PLATFORM_D1`.
+2. Fetch attachments from the shared R2 path.
+3. Write a *copy* to user B's `UserRegistry` with a new `toolId`.
+4. Copy attachments to `users/<userB>/tools/<newToolId>/...`.
+5. Record the install in `tool_installs` (author, installer, version).
 
-The `/view` router reads `<userId>` from the `publications` table in
-`PLATFORM_D1`, keyed by `<shortId>`. R2 reads are always scoped to the
-owning user's path prefix — the shortId alone never grants access to
-another user's R2 path.
+After install, user B's copy is independent. User A cannot modify it.
+User A updating their own tool does not auto-propagate — user B sees a
+"new version available" indicator and chooses.
 
-### `PLATFORM_KV`
-Platform-internal KV — rate limits, feature flags, admin cache.
+### Invoking a shared tool
 
-    user:<userId>:ratelimit:<toolCategory>
-    user:<userId>:featureflags
-    admin:users          (set of known userIds)
+Execution is always in the **invoker's** sandbox, using the invoker's
+provider key, counting against the invoker's rate limits. The author's
+only contribution is the prompt + attachments. No cross-tenant compute.
 
-### `PLATFORM_D1`
-Platform-internal D1. Every table has a `user_id` column. Every query
-includes a `WHERE user_id = ?` clause, enforced by a query helper that
-takes `userId` as a required parameter.
+### Attempted cross-tenant violations — reject paths
 
-    resources (user_id, type, name, created_at, metadata)
-    audit_log (user_id, actor, action, target, at)
-    skill_registry (user_id, name, worker_name, description, input_schema, last_called_at, call_count, created_at)
-
----
-
-## UserRegistry Durable Object
-
-Per user, keyed by `userId`. Holds the **authoritative** list of
-resources the user owns. Every MCP tool that mutates a resource
-reads + writes this DO as part of the same logical operation.
-
-    class UserRegistry extends DurableObject {
-      // SQLite schema
-      //   resources (type TEXT, name TEXT, created_at INTEGER, PRIMARY KEY (type, name))
-      //   provider_keys (provider TEXT PRIMARY KEY, encrypted_key BLOB)
-      //   session (opencode_port INTEGER, last_active_at INTEGER)
-
-      async registerResource(type: ResourceType, name: string): Promise<void>;
-      async isOwned(type: ResourceType, name: string): Promise<boolean>;
-      async removeResource(type: ResourceType, name: string): Promise<void>;
-      async listResources(type?: ResourceType): Promise<Resource[]>;
-
-      async setProviderKey(provider: string, key: string): Promise<void>;
-      async getProviderKey(provider: string): Promise<string | null>;
-
-      async touchSession(): Promise<void>;
-    }
-
-Why a DO instead of just `PLATFORM_D1`? Two reasons:
-
-1. **Strong consistency.** A skill-deploy tool wants to register the
-   resource and confirm in one atomic step. DOs give us SQLite
-   transactions.
-2. **Sharded scaling.** Heavy per-user activity (rapid tool calls) stays
-   on that user's DO, not on one shared D1 primary.
-
-Platform-wide analytics (cross-user listings for admins) still go to
-`PLATFORM_D1`; tools that mutate a user's state write to the DO first,
-then async-mirror to `PLATFORM_D1` for the admin surface.
+- User B calling `tools.invoke(toolId)` on a tool not in their registry
+  → `NOT_FOUND`. Even if they guess a valid toolId, only their own
+  registry is consulted by `tools.invoke`; shared tools are only
+  callable if installed.
+- User B calling `tools.list()` — returns only their own registry.
+- Admin impersonation — only via documented, logged override
+  (`/dash/admin`, gated by the admin Access group).
 
 ---
 
 ## The guardrail pattern
 
-Every MCP tool that operates on an existing resource follows this
-pattern:
+Any operation that mutates a resource follows the four-step pattern:
 
-    export const deleteBucket = defineTool({
-      name: "r2_delete_bucket",
-      input: z.object({ name: z.string() }),
-      async execute({ name }, ctx) {
-        const fullName = ctx.names.r2Bucket(name);
+1. Resolve the fully-qualified name / key via `ctx.keys` or `ctx.names`.
+2. Ownership guard: read the user's registry (DO or D1 helper) and
+   refuse if the resource isn't theirs (for mutations of existing
+   resources) or already exists (for creations).
+3. Perform the operation using the fully-qualified name.
+4. Update the registry to reflect the mutation.
 
-        // 1. Refuse if not owned
-        if (!(await ctx.userRegistry.isOwned("r2", fullName))) {
-          return { ok: false, error: "Bucket not found in your registry.", code: "NOT_OWNED" };
-        }
-
-        // 2. Call CF API with the prefixed name
-        await ctx.cfApi.r2.deleteBucket(fullName);
-
-        // 3. Update registry
-        await ctx.userRegistry.removeResource("r2", fullName);
-
-        return { ok: true, data: { name: fullName } };
-      },
-    });
-
-For *create* tools, step 1 is skipped, step 3 is
-`registerResource(...)`. For *list* tools, steps 2 and 3 are replaced
-with a listing from the registry (never from the CF API — registry is
-source of truth).
-
----
-
-## Sandbox isolation
-
-One `Sandbox` DO per user. The DO id is `env.SANDBOX.idFromName(userId)`.
-Containers cannot see each other. Filesystem, processes, env vars, and
-preview URLs are all scoped to that sandbox.
-
-Preview URLs work across users *because* their hostname encodes the
-sandbox ID:
-
-    https://<port>-<sandboxId>-<token>.loom.yourcompany.com
-
-`proxyToSandbox()` routes by hostname, so even if user A guesses user
-B's preview URL (they can't — the token is unguessable), the request
-never reaches A's sandbox.
-
----
-
-## Workers for Platforms isolation
-
-User-deployed skills live in a single dispatch namespace
-(`loom-skills`). They are deployed as:
-
-    loom-<userId>-<skillName>
-
-The `workers_invoke_skill` tool:
-
-1. Looks up `<skillName>` in the user's registry (→ fully qualified name).
-2. Calls `env.DISPATCHER.get("loom-<userId>-<skillName>")`.
-3. Invokes the Worker with the user's args.
-
-If the user tries to invoke `workers_invoke_skill({name: "other-user-skill"})`
-via a crafted OpenCode prompt, step 1 fails — it's not in the user's
-registry, so the tool refuses.
-
-The outbound Worker (`apps/outbound`) tags every egress request with
-`x-loom-user-id` for auditability.
-
----
-
-## Provider keys (BYO)
-
-Each user provides their own Anthropic / OpenAI / Workers AI key
-through `/dash/settings`. The key is:
-
-1. Encrypted with a per-user AEAD key derived from `userId + PLATFORM_JWT_SECRET`.
-2. Stored in `UserRegistry.provider_keys`.
-3. Written into the container's `~/.opencode/opencode.jsonc` at sandbox
-   startup, in-process (never leaves the Worker → sandbox boundary
-   except through the sandbox API).
-4. Never logged. Never included in audit events.
-
-When a user rotates their key, the container is restarted (OpenCode
-re-reads config on process start).
-
----
-
-## Admin role
-
-Members of the Access group `loom-admins` (configurable in Access) get
-`/dash/admin`:
-
-- List all users, last active, resource counts.
-- Force-destroy a sandbox (incident response).
-- Rotate `PLATFORM_JWT_SECRET` (invalidates all sandbox → MCP JWTs).
-
-No admin tool bypasses the ownership check — admins cannot read another
-user's R2 objects or D1 rows. Incident response requires a documented
-"admin impersonation" log entry and a time-boxed override.
+Skipping any step is a **security bug**. Code review checklist in
+`AGENTS.md` includes this item.
 
 ---
 
 ## `/view` and multi-tenancy
 
-The `/view` origin is the one deliberately-open surface. It is
-public-by-shortId, but tenancy still holds:
+`/view` is public by design, but tenancy still holds:
 
-- Every shortId maps 1:1 to a `userId` in `PLATFORM_D1.publications`.
-- The `/view` router enforces the userId→R2 path mapping on every
-  request; a user cannot craft a shortId that reads another user's
-  publication (different shortId → different row → different userId).
-- Mode B (proxy) publications can only proxy to the publishing user's
-  own sandbox. User A can never serve traffic from user B's sandbox.
-- Revocation is per-shortId; only the owning user or an admin can
-  revoke.
+- Every `shortId` maps 1:1 to a `userId` in
+  `PLATFORM_D1.publications`. The `/view` router reads the row,
+  derives the R2 path prefix from its `userId`, and fetches content
+  from there. User A cannot craft a shortId that reads user B's R2.
+- Mode B (proxy) publications proxy only to the publishing user's own
+  sandbox.
+- Rotation, revocation, expiry: only the owning user or an admin can
+  invoke.
 - Audit log records `userId` + `shortId` on every publish / rotate /
   revoke / request.
 
@@ -256,13 +181,31 @@ See [`VIEW.md`](./VIEW.md) for the full attribution story.
 ## What tenants MUST NOT share
 
 - User A cannot read user B's workspace files.
-- User A cannot read or list user B's R2 objects, KV values, D1 rows,
-  or Workers.
-- User A cannot invoke user B's skills.
+- User A cannot read or list user B's R2 objects.
+- User A cannot read user B's D1 rows or KV values.
+- User A cannot see user B's private tools or invoke them.
+- User A cannot modify user B's shared tools (only install).
 - User A cannot see user B's provider keys.
 - User A cannot access user B's sandbox preview URLs (token-gated).
 - User A cannot revoke, rotate, or overwrite user B's publications.
 - User A cannot proxy traffic through user B's sandbox via `/view`.
 
-Any violation of the above is a **security bug**. Report via
-`SECURITY.md` (once added) or directly to the repo owner.
+Any violation of the above is a security bug. File via `SECURITY.md`
+(once added) or directly to the repo owner.
+
+---
+
+## Admin role
+
+Members of a configurable Access group (default `loom-admins`) can
+access `/dash/admin`:
+
+- List all users, last active, resource counts.
+- Force-destroy a sandbox.
+- Revoke any publication.
+- Rotate `PLATFORM_JWT_SECRET` (invalidates all sandbox → `/mcp` JWTs).
+- View but not modify private tools (behind a time-boxed
+  "impersonation" override with audit log entry).
+
+Admin operations do not bypass registry lookups — they extend them via
+a separate code path that is explicit, logged, and reviewable.

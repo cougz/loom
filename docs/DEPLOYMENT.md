@@ -4,7 +4,7 @@ loom is designed to deploy via **Cloudflare Workers Builds** — no
 GitHub Actions, no external CI runners. Push to `main` on your fork,
 Cloudflare builds and deploys.
 
-This document walks through the one-time setup. Plan for about 30
+This document walks through the one-time setup. Plan for about 20
 minutes the first time.
 
 ---
@@ -12,19 +12,15 @@ minutes the first time.
 ## Prerequisites
 
 1. **Cloudflare account** with:
-   - Workers Paid plan (for Containers, Durable Objects beyond free tier,
-     Workers for Platforms)
-   - Workers for Platforms enabled (Dashboard → Workers → Workers for
-     Platforms → Enable)
+   - Workers Paid plan (for Containers and Durable Objects beyond the
+     free tier)
    - Browser Rendering enabled (Dashboard → Compute → Browser Rendering)
-   - Workers AI available (it is on all accounts)
+   - Workers AI available (on all accounts)
 
 2. **Custom domain** in your Cloudflare account with:
    - `loom.yourcompany.com` — main hostname
    - `*.loom.yourcompany.com` — wildcard for sandbox preview URLs
-   - `view.loom.yourcompany.com` — dedicated origin for `/view`
-     (MUST be proxied through Cloudflare; MUST NOT be attached to the
-     same Access application — `/view` is deliberately public).
+   - (`/view` shares the main hostname, no extra DNS record needed)
 
 3. **Cloudflare Access** set up on your account. Free tier is fine.
 
@@ -54,14 +50,14 @@ It will:
 1. Prompt you to `wrangler login` if needed.
 2. Ask for your Cloudflare account ID and hostname.
 3. Create:
-   - Dispatch namespace `loom-skills`
-   - R2 buckets `loom-workspace-snapshots` and `loom-skill-source`
-   - KV namespace `loom-platform`
-   - D1 database `loom-platform` + run initial migrations
+   - R2 buckets: `loom-workspace-snapshots`, `loom-publications`,
+     `loom-tool-attachments`
+   - KV namespace: `loom-platform`
+   - D1 database: `loom-platform` (runs initial migrations)
 4. Print a `wrangler.jsonc` fragment with all the IDs filled in.
 
 Copy the fragment into `apps/web/wrangler.jsonc`, replacing the
-placeholders. Commit and push.
+`__FILL_ME_FROM_SETUP_SCRIPT__` placeholders. Commit and push.
 
 ---
 
@@ -72,8 +68,9 @@ In the Cloudflare dashboard:
 1. **Zero Trust → Access → Applications → Add an application.**
 2. Choose **Self-hosted.**
 3. **Application domain:** `loom.yourcompany.com` (no path — the whole
-   hostname). **Do NOT add `view.loom.yourcompany.com` to this
-   application.** The view origin must remain public.
+   hostname). `/view` is served on the same hostname; the Worker
+   short-circuits Access verification for `/view/*` paths in code, so
+   no extra Access application is needed.
 4. **Session duration:** whatever your team prefers.
 5. **Identity providers:** add the IdPs your team uses (Google, Okta,
    GitHub, Azure AD, etc.).
@@ -105,19 +102,16 @@ From the repo root:
     openssl rand -base64 32
 
 `CF_API_TOKEN` — create at **My Profile → API Tokens → Create Token →
-Custom Token.** Required permissions:
+Custom Token.** Required permissions (framework-level provisioning
+only — this token is never exposed to the agent or the sandbox):
 
 | Scope | Permission |
 |---|---|
-| Account → Workers Scripts | Edit |
 | Account → Workers R2 Storage | Edit |
 | Account → Workers KV Storage | Edit |
 | Account → D1 | Edit |
-| Account → Workers for Platforms | Edit |
 | Account → Workers AI | Read |
 | Account → Browser Rendering | Edit |
-| Zone (your zone) → DNS | Edit |
-| Zone (your zone) → Workers Routes | Edit |
 
 ---
 
@@ -148,23 +142,7 @@ You can watch progress in the **Builds** tab.
 
 ---
 
-## Step 6 — Deploy the outbound Worker
-
-The egress control Worker is a separate deployment (different namespace
-binding). One-time:
-
-    pnpm --filter @loom/outbound deploy
-
-Then either:
-
-- Connect Workers Builds for `apps/outbound` separately, or
-- Include it in the main deploy command:
-
-        pnpm --filter @loom/web deploy && pnpm --filter @loom/outbound deploy
-
----
-
-## Step 7 — Build and publish the sandbox container
+## Step 6 — Build and publish the sandbox container
 
 The container image is referenced by `apps/web/wrangler.jsonc`. Build
 and push it:
@@ -177,12 +155,14 @@ redeploy the Worker.
 
 ---
 
-## Step 8 — Smoke-test
+## Step 7 — Smoke-test
 
 1. Open `https://loom.yourcompany.com/dash` in your browser.
 2. Access redirects you to sign in.
 3. After sign-in, the placeholder page loads.
-4. Once M2 is in, the OpenCode iframe loads from your sandbox.
+4. Once M2 lands, the OpenCode iframe loads from your sandbox.
+5. Once M3 lands, `loom-code`, `loom-ai`, `loom-render` are wired
+   through the framework endpoints.
 
 If anything fails:
 
@@ -192,6 +172,8 @@ If anything fails:
   pattern in `wrangler.jsonc` missing.
 - **Container doesn't start** — check `wrangler containers build` ran
   and the image tag in `wrangler.jsonc` matches.
+- **`/view/<shortId>` returns 401** — the Worker's `/view/*` bypass
+  is broken; `/view` should never require auth.
 
 ---
 
@@ -209,6 +191,6 @@ If anything fails:
 
     ./scripts/teardown
 
-Destroys all loom resources (buckets, KV, D1, dispatch namespace,
-Worker, container image). Prompts for confirmation. Your user data is
-gone — there is no undo.
+Destroys all loom resources (R2 buckets, KV, D1, Worker, container
+image). Prompts for confirmation. Your user data is gone — there is
+no undo.
