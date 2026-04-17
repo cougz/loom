@@ -1,40 +1,35 @@
 #!/usr/bin/env bash
-# loom bootstrap
-#
-# Creates the Cloudflare resources loom needs (R2 buckets, KV namespace,
-# D1 database), sets all required Worker secrets, and patches
-# apps/web/wrangler.jsonc with the resource IDs and your hostname.
+# loom bootstrap — provisions Cloudflare resources and sets secrets.
 # Idempotent — safe to re-run.
-#
-# Prerequisites:
-#   - wrangler logged in (`wrangler login`)
-#   - pnpm + Node 22 installed
 
 set -euo pipefail
 
-# shellcheck disable=SC2034
 COL_GREEN='\033[0;32m'; COL_YELLOW='\033[0;33m'; COL_RED='\033[0;31m'; COL_RESET='\033[0m'
 
 log()   { printf "${COL_GREEN}[loom]${COL_RESET} %s\n" "$*"; }
 warn()  { printf "${COL_YELLOW}[loom]${COL_RESET} %s\n" "$*"; }
 fatal() { printf "${COL_RED}[loom]${COL_RESET} %s\n" "$*" >&2; exit 1; }
 
-# Prompt for a required value; re-prompt if blank.
-# Usage: prompt_required VAR_NAME "Display label" [--secret]
 prompt_required() {
-  local var="$1" label="$2" secret="${3:-}"
+  local var="$1" label="$2"
   local val=""
   while [[ -z "$val" ]]; do
-    if [[ "$secret" == "--secret" ]]; then
-      read -rsp "  ${label}: " val; echo
-    else
-      read -rp  "  ${label}: " val
-    fi
+    read -rp "  ${label}: " val
     [[ -z "$val" ]] && warn "Value required — please try again."
   done
   printf -v "$var" '%s' "$val"
 }
 
+# Parse JSON array from wrangler list output, return field by name match.
+# Usage: json_find_field <json> <match_key> <match_val> <return_key>
+json_find_field() {
+  python3 -c "
+import json, sys
+data = json.loads(sys.argv[1])
+item = next((x for x in data if str(x.get(sys.argv[2], '')) == sys.argv[3]), None)
+print(item[sys.argv[4]] if item and sys.argv[4] in item else '', end='')
+" "$1" "$2" "$3" "$4" 2>/dev/null || true
+}
 
 command -v pnpm >/dev/null || fatal "pnpm not found. Install it first."
 
@@ -44,105 +39,63 @@ pnpm install --frozen-lockfile
 log "Logging in to Cloudflare…"
 npx wrangler login
 
-# ── Prompt for configuration ─────────────────────────────────────────────────
+# ── Prompts ──────────────────────────────────────────────────────────────────
 
 printf "\n${COL_GREEN}[loom]${COL_RESET} Enter your Cloudflare details.\n\n"
 
-prompt_required LOOM_HOSTNAME \
-  "Hostname for loom — no https:// (e.g. loom.yourcompany.com)"
-LOOM_HOSTNAME="${LOOM_HOSTNAME#https://}"
-LOOM_HOSTNAME="${LOOM_HOSTNAME#http://}"
-LOOM_HOSTNAME="${LOOM_HOSTNAME%/}"
+prompt_required LOOM_HOSTNAME    "Hostname (e.g. loom.yourcompany.com)"
+LOOM_HOSTNAME="${LOOM_HOSTNAME#https://}"; LOOM_HOSTNAME="${LOOM_HOSTNAME#http://}"; LOOM_HOSTNAME="${LOOM_HOSTNAME%/}"
 
-prompt_required CF_ACCESS_TEAM_NAME \
-  "Access team name (e.g. yourcompany)"
-CF_ACCESS_TEAM_NAME="${CF_ACCESS_TEAM_NAME#https://}"
-CF_ACCESS_TEAM_NAME="${CF_ACCESS_TEAM_NAME%.cloudflareaccess.com}"
-CF_ACCESS_TEAM_NAME="${CF_ACCESS_TEAM_NAME%/}"
-CF_ACCESS_TEAM_DOMAIN="${CF_ACCESS_TEAM_NAME}.cloudflareaccess.com"
+prompt_required CF_ACCESS_TEAM   "Access team name (e.g. yourcompany)"
+CF_ACCESS_TEAM="${CF_ACCESS_TEAM%.cloudflareaccess.com}"
+CF_ACCESS_TEAM_DOMAIN="${CF_ACCESS_TEAM}.cloudflareaccess.com"
 
-prompt_required CF_ACCESS_AUD \
-  "Access application AUD tag (Zero Trust → Access → your app)"
-
-prompt_required CF_ACCOUNT_ID \
-  "Cloudflare account ID (from: wrangler whoami)"
-
-prompt_required CF_API_TOKEN \
-  "Cloudflare API token (R2/KV/D1/AI/Browser edit permissions)"
+prompt_required CF_ACCESS_AUD    "Access AUD tag (Zero Trust → Access → your app → Overview)"
+prompt_required CF_ACCOUNT_ID    "Account ID (from: wrangler whoami)"
+prompt_required CF_API_TOKEN     "API token (R2/KV/D1/AI/Browser Rendering edit)"
 
 if command -v openssl >/dev/null 2>&1; then
   PLATFORM_JWT_SECRET=$(openssl rand -base64 32)
   log "PLATFORM_JWT_SECRET auto-generated."
 else
-  warn "openssl not found — enter a random 32+ byte string."
-  prompt_required PLATFORM_JWT_SECRET "PLATFORM_JWT_SECRET" --secret
+  prompt_required PLATFORM_JWT_SECRET "PLATFORM_JWT_SECRET (32+ random bytes)"
 fi
 
-# ── Provision Cloudflare resources ──────────────────────────────────────────
+# Shorthand so every wrangler call targets the right account without prompting.
+WR="npx wrangler --account-id ${CF_ACCOUNT_ID}"
+
+# ── Provision resources ───────────────────────────────────────────────────────
 
 printf "\n"
-log "Provisioning Cloudflare resources (idempotent)…"
+log "Provisioning Cloudflare resources…"
 
-log "Creating R2 buckets…"
-wrangler r2 bucket create loom-workspace-snapshots 2>/dev/null || warn "Bucket loom-workspace-snapshots may already exist"
-wrangler r2 bucket create loom-publications        2>/dev/null || warn "Bucket loom-publications may already exist"
-wrangler r2 bucket create loom-tool-attachments    2>/dev/null || warn "Bucket loom-tool-attachments may already exist"
+log "R2 buckets…"
+$WR r2 bucket create loom-workspace-snapshots 2>/dev/null || warn "loom-workspace-snapshots already exists"
+$WR r2 bucket create loom-publications        2>/dev/null || warn "loom-publications already exists"
+$WR r2 bucket create loom-tool-attachments    2>/dev/null || warn "loom-tool-attachments already exists"
 
-log "Creating KV namespace…"
-KV_OUTPUT=$(wrangler kv namespace create loom-platform --json 2>&1 || true)
-KV_ID=$(echo "$KV_OUTPUT" | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print(d.get('id', ''), end='')
-except Exception:
-    pass
-" 2>/dev/null || true)
+log "KV namespace…"
+KV_JSON=$($WR kv namespace create loom-platform --json 2>/dev/null || true)
+KV_ID=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d.get('id',''),end='')" "$KV_JSON" 2>/dev/null || true)
 
 if [[ -z "$KV_ID" ]]; then
-  log "KV namespace may already exist, fetching ID…"
-  KV_LIST=$(wrangler kv namespace list --json 2>/dev/null || true)
-  KV_ID=$(echo "$KV_LIST" | python3 -c "
-import json, sys
-try:
-    data = json.load(sys.stdin)
-    ns = next((x for x in data if x.get('title') == 'loom-platform'), None)
-    print(ns['id'] if ns else '', end='')
-except Exception:
-    pass
-" 2>/dev/null || true)
+  KV_LIST=$($WR kv namespace list --json 2>/dev/null || true)
+  KV_ID=$(json_find_field "$KV_LIST" "title" "loom-platform" "id")
 fi
+[[ -z "$KV_ID" ]] && fatal "Could not get KV namespace ID."
 
-log "Creating D1 database…"
-D1_OUTPUT=$(wrangler d1 create loom-platform --json 2>&1 || true)
-D1_ID=$(echo "$D1_OUTPUT" | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print(d.get('uuid') or d.get('database_id') or '', end='')
-except Exception:
-    pass
-" 2>/dev/null || true)
+log "D1 database…"
+D1_JSON=$($WR d1 create loom-platform --json 2>/dev/null || true)
+D1_ID=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d.get('uuid') or d.get('database_id') or '',end='')" "$D1_JSON" 2>/dev/null || true)
 
 if [[ -z "$D1_ID" ]]; then
-  log "D1 database may already exist, fetching ID…"
-  D1_LIST=$(wrangler d1 list --json 2>/dev/null || true)
-  D1_ID=$(echo "$D1_LIST" | python3 -c "
-import json, sys
-try:
-    data = json.load(sys.stdin)
-    db = next((x for x in data if x.get('name') == 'loom-platform'), None)
-    if db:
-        print(db.get('uuid') or db.get('database_id') or '', end='')
-except Exception:
-    pass
-" 2>/dev/null || true)
+  D1_LIST=$($WR d1 list --json 2>/dev/null || true)
+  D1_ID=$(json_find_field "$D1_LIST" "name" "loom-platform" "uuid")
+  [[ -z "$D1_ID" ]] && D1_ID=$(json_find_field "$D1_LIST" "name" "loom-platform" "database_id")
 fi
+[[ -z "$D1_ID" ]] && fatal "Could not get D1 database ID."
 
-[[ -z "$KV_ID" ]] && fatal "Could not obtain KV namespace ID. Check wrangler is logged in."
-[[ -z "$D1_ID" ]] && fatal "Could not obtain D1 database ID. Check wrangler is logged in."
-
-# ── Write gitignored deploy-env ───────────────────────────────────────────────
+# ── Write local config (gitignored) ──────────────────────────────────────────
 
 log "Writing apps/web/.deploy-env…"
 cat > apps/web/.deploy-env <<ENVFILE
@@ -151,45 +104,29 @@ PLATFORM_D1_ID=${D1_ID}
 LOOM_HOSTNAME=${LOOM_HOSTNAME}
 ENVFILE
 
-# ── Generate local wrangler config ───────────────────────────────────────────
-
 scripts/gen-wrangler-config
 
-# ── Set Worker secrets ───────────────────────────────────────────────────────
+# ── Worker secrets ────────────────────────────────────────────────────────────
 
 printf "\n"
 log "Setting Worker secrets…"
-
-printf '%s' "$CF_ACCESS_TEAM_DOMAIN" | wrangler secret put CF_ACCESS_TEAM_DOMAIN --name loom
-printf '%s' "$CF_ACCESS_AUD"         | wrangler secret put CF_ACCESS_AUD         --name loom
-printf '%s' "$CF_ACCOUNT_ID"         | wrangler secret put CF_ACCOUNT_ID         --name loom
-printf '%s' "$CF_API_TOKEN"          | wrangler secret put CF_API_TOKEN          --name loom
-printf '%s' "$PLATFORM_JWT_SECRET"   | wrangler secret put PLATFORM_JWT_SECRET   --name loom
-
+printf '%s' "$CF_ACCESS_TEAM_DOMAIN" | $WR secret put CF_ACCESS_TEAM_DOMAIN --name loom
+printf '%s' "$CF_ACCESS_AUD"         | $WR secret put CF_ACCESS_AUD         --name loom
+printf '%s' "$CF_ACCOUNT_ID"         | $WR secret put CF_ACCOUNT_ID         --name loom
+printf '%s' "$CF_API_TOKEN"          | $WR secret put CF_API_TOKEN          --name loom
+printf '%s' "$PLATFORM_JWT_SECRET"   | $WR secret put PLATFORM_JWT_SECRET   --name loom
 log "Secrets set."
 
-# ── Done ─────────────────────────────────────────────────────────────────────
+# ── Done ──────────────────────────────────────────────────────────────────────
 
 cat <<EOF
 
 ${COL_GREEN}Setup complete.${COL_RESET}
 
-apps/web/.deploy-env and apps/web/wrangler.local.jsonc have been written
-locally. Neither file is tracked by git.
-
 Next steps:
-  1. First manual deploy (required before Workers Builds can connect):
-       pnpm --filter @loom/web deploy
-
-  2. Build the container image:
-       wrangler containers build -t loom-sandbox:v1 -p .
-
-  3. Connect Workers Builds in the Cloudflare dashboard.
-     Build:  pnpm install --frozen-lockfile && pnpm --filter @loom/web build
-     Deploy: pnpm --filter @loom/web deploy
-
-     Set these environment variables in the Workers Builds settings so
-     the deploy step can generate the config in CI:
+  1. pnpm --filter @loom/web deploy
+  2. wrangler containers build -t loom-sandbox:v1 -p .
+  3. Connect Workers Builds — set these env vars in the dashboard:
        PLATFORM_KV_ID = ${KV_ID}
        PLATFORM_D1_ID = ${D1_ID}
        LOOM_HOSTNAME  = ${LOOM_HOSTNAME}
