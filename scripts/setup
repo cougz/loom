@@ -36,11 +36,13 @@ prompt_required() {
 }
 
 
-command -v pnpm >/dev/null     || fatal "pnpm not found. Install it first."
-command -v wrangler >/dev/null || pnpm dlx wrangler --version >/dev/null
+command -v pnpm >/dev/null || fatal "pnpm not found. Install it first."
 
 log "Installing dependencies…"
 pnpm install --frozen-lockfile
+
+log "Logging in to Cloudflare…"
+npx wrangler login
 
 # ── Prompt for configuration ─────────────────────────────────────────────────
 
@@ -66,7 +68,7 @@ prompt_required CF_ACCOUNT_ID \
   "Cloudflare account ID (from: wrangler whoami)"
 
 prompt_required CF_API_TOKEN \
-  "Cloudflare API token (R2/KV/D1/AI/Browser edit permissions)" --secret
+  "Cloudflare API token (R2/KV/D1/AI/Browser edit permissions)"
 
 if command -v openssl >/dev/null 2>&1; then
   PLATFORM_JWT_SECRET=$(openssl rand -base64 32)
