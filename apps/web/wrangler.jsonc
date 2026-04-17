@@ -46,9 +46,11 @@
   // the r2_create_bucket MCP tool) are separate, per-user.
   //   WORKSPACE_SNAPSHOTS   tarballs of each user's workspace
   //   PUBLICATIONS          content served by /view/<shortId>/... (see VIEW.md)
+  //   TOOL_ATTACHMENTS      files bundled with user-created tools (see TOOLS.md)
   "r2_buckets": [
     { "binding": "WORKSPACE_SNAPSHOTS", "bucket_name": "loom-workspace-snapshots" },
-    { "binding": "PUBLICATIONS", "bucket_name": "loom-publications" }
+    { "binding": "PUBLICATIONS", "bucket_name": "loom-publications" },
+    { "binding": "TOOL_ATTACHMENTS", "bucket_name": "loom-tool-attachments" }
   ],
 
   // Platform KV + D1. Both partitioned by user_id. User-created KV and D1

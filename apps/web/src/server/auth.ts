@@ -20,7 +20,7 @@ export type AuthContext = {
 export type JwtPayload = {
   sub: string;
   email: string;
-  aud: string;
+  aud: string | string[];
   exp: number;
   iss: string;
 };
@@ -157,7 +157,6 @@ export async function verifyAccessJwt(
   const signature = Uint8Array.from(atob(parts[2].replace(/-/g, "+").replace(/_/g, "/")), (c) =>
     c.charCodeAt(0),
   );
-  // @ts-expect-error parts checked above
   const data = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
 
   const valid = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", cryptoKey, signature, data);
@@ -171,8 +170,9 @@ export async function verifyAccessJwt(
   const payloadJson = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
   const payload = JSON.parse(payloadJson) as JwtPayload;
 
-  // Verify audience
-  if (payload.aud !== env.CF_ACCESS_AUD) {
+  // Verify audience (aud may be a string or string[] per CF Access spec)
+  const audList = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (!audList.includes(env.CF_ACCESS_AUD)) {
     throw new Error("Invalid audience");
   }
 

@@ -235,8 +235,9 @@ export function createMcpServerHandler(
           params?: Record<string, unknown>;
         };
 
-        // Handle tools/list method
+        // Handle tools/list method — requires auth
         if (body.method === "tools/list") {
+          await getAuthContext(request, env);
           return new Response(
             JSON.stringify({
               tools: tools.map((t) => ({

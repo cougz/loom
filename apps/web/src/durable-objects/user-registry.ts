@@ -120,8 +120,10 @@ export class UserRegistry implements DurableObject {
 
   constructor(ctx: DurableObjectState, _env: unknown) {
     this.sql = ctx.storage.sql;
-    // Extract userId from the DO ID (which is the userId)
-    this.userId = ctx.id.toString() as UserId;
+    // When created via idFromName(userId), ctx.id.name returns the name used.
+    // Fall back to ctx.id.toString() only if the ID was not created by name.
+    const namedId = (ctx.id as unknown as { name?: string }).name;
+    this.userId = (namedId ?? ctx.id.toString()) as UserId;
     this.runMigrations();
   }
 
@@ -154,7 +156,15 @@ export class UserRegistry implements DurableObject {
     const results = this.sql
       .exec<Tool>(
         `
-        SELECT * FROM tools ORDER BY updated_at DESC
+        SELECT
+          id, name, description, prompt,
+          parameters_json  AS parametersJson,
+          attachments_json AS attachmentsJson,
+          visibility, version,
+          created_at       AS createdAt,
+          updated_at       AS updatedAt,
+          invocation_count AS invocationCount
+        FROM tools ORDER BY updated_at DESC
       `,
       )
       .toArray();
@@ -165,7 +175,15 @@ export class UserRegistry implements DurableObject {
     const results = this.sql
       .exec<Tool>(
         `
-        SELECT * FROM tools WHERE id = ?
+        SELECT
+          id, name, description, prompt,
+          parameters_json  AS parametersJson,
+          attachments_json AS attachmentsJson,
+          visibility, version,
+          created_at       AS createdAt,
+          updated_at       AS updatedAt,
+          invocation_count AS invocationCount
+        FROM tools WHERE id = ?
       `,
         id,
       )
@@ -250,7 +268,10 @@ export class UserRegistry implements DurableObject {
     const results = this.sql
       .exec<Session>(
         `
-        SELECT opencode_port, last_active_at FROM session WHERE id = 1
+        SELECT
+          opencode_port  AS opencodePort,
+          last_active_at AS lastActiveAt
+        FROM session WHERE id = 1
       `,
       )
       .toArray();
@@ -299,7 +320,8 @@ export class UserRegistry implements DurableObject {
       return this.sql
         .exec<Resource>(
           `
-          SELECT type, name, created_at FROM resources WHERE type = ? ORDER BY created_at DESC
+          SELECT type, name, created_at AS createdAt
+          FROM resources WHERE type = ? ORDER BY created_at DESC
         `,
           type,
         )
@@ -308,7 +330,8 @@ export class UserRegistry implements DurableObject {
     return this.sql
       .exec<Resource>(
         `
-        SELECT type, name, created_at FROM resources ORDER BY created_at DESC
+        SELECT type, name, created_at AS createdAt
+        FROM resources ORDER BY created_at DESC
       `,
       )
       .toArray();

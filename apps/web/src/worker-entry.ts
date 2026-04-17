@@ -103,12 +103,25 @@ async function proxyToSandbox(_request: Request, _env: Env): Promise<Response | 
 }
 
 /**
+ * Escape a string for safe HTML insertion.
+ */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
+/**
  * Get auth context for a request.
- * In dev mode, uses mock context if no JWT present.
+ * Dev mode is determined solely by the absence of CF_ACCESS_TEAM_DOMAIN.
+ * Never trust a request header to enable dev mode.
  */
 async function getAuthContext(request: Request, env: Env): Promise<AuthContext> {
-  // Check if we're in dev mode (no CF_ACCESS_TEAM_DOMAIN set or mock header present)
-  const isDevMode = !env.CF_ACCESS_TEAM_DOMAIN || request.headers.get("x-loom-dev-mode") === "true";
+  // Dev mode: CF_ACCESS_TEAM_DOMAIN unset (local wrangler dev only)
+  const isDevMode = !env.CF_ACCESS_TEAM_DOMAIN;
 
   if (isDevMode) {
     // Try to authenticate, but fall back to mock if it fails
@@ -189,9 +202,9 @@ export default {
 </head>
 <body>
   <h1>loom</h1>
-  <p>Hello, ${auth.email}</p>
+  <p>Hello, ${escapeHtml(auth.email)}</p>
   <div class="user-info">
-    <p><strong>User ID:</strong> <span class="user-id">${auth.userId}</span></p>
+    <p><strong>User ID:</strong> <span class="user-id">${escapeHtml(auth.userId)}</span></p>
     <p><strong>Status:</strong> M1 milestone — auth + boot complete</p>
   </div>
 </body>
@@ -209,7 +222,7 @@ export default {
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>loom — ${url.pathname}</title>
+  <title>loom — ${escapeHtml(url.pathname)}</title>
   <style>
     body {
       font-family: system-ui, -apple-system, sans-serif;
@@ -224,9 +237,9 @@ export default {
 </head>
 <body>
   <h1>loom</h1>
-  <p>Path: ${url.pathname}</p>
-  <p>Hello, ${auth.email}</p>
-  <p>User ID: ${auth.userId}</p>
+  <p>Path: ${escapeHtml(url.pathname)}</p>
+  <p>Hello, ${escapeHtml(auth.email)}</p>
+  <p>User ID: ${escapeHtml(auth.userId)}</p>
   <p><em>Full TanStack Start UI coming in M2+</em></p>
 </body>
 </html>`,
@@ -235,19 +248,9 @@ export default {
             headers: { "Content-Type": "text/html" },
           },
         );
-      } catch (error) {
-        // Auth failed
-        const errorMessage = error instanceof Error ? error.message : "Authentication failed";
-        return new Response(
-          JSON.stringify({
-            error: "Unauthorized",
-            message: errorMessage,
-          }),
-          {
-            status: 401,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
+      } catch {
+        // Auth failed — redirect to Access login page (spec §3.1)
+        return Response.redirect(`/cdn-cgi/access/login/${url.hostname}`, 302);
       }
     }
 

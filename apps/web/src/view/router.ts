@@ -7,7 +7,8 @@
 
 // View router environment type (subset of full Env)
 type ViewEnv = {
-  USER_REGISTRY: DurableObjectNamespace<unknown>;
+  // biome-ignore lint/suspicious/noExplicitAny: DO type not available in this module
+  USER_REGISTRY: DurableObjectNamespace<any>;
   PLATFORM_KV: KVNamespace;
   PLATFORM_D1: D1Database;
   PUBLICATIONS: R2Bucket;
