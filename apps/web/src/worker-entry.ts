@@ -312,7 +312,10 @@ export default {
         );
       } catch {
         // Auth failed — redirect to Access login page (spec §3.1)
-        return Response.redirect(`/cdn-cgi/access/login/${url.hostname}`, 302);
+        return Response.redirect(
+          `https://${url.hostname}/cdn-cgi/access/login/${url.hostname}`,
+          302,
+        );
       }
     }
 
