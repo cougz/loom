@@ -2,8 +2,9 @@
 # loom bootstrap
 #
 # Creates the Cloudflare resources loom needs (R2 buckets, KV namespace,
-# D1 database) and prints a wrangler.jsonc fragment with the IDs filled
-# in. Idempotent — safe to re-run.
+# D1 database), prompts for required secrets and sets them via wrangler,
+# then prints a wrangler.jsonc fragment with the resource IDs filled in.
+# Idempotent — safe to re-run.
 #
 # Prerequisites:
 #   - wrangler logged in (`wrangler login`)
@@ -18,49 +19,101 @@ log()   { printf "${COL_GREEN}[loom]${COL_RESET} %s\n" "$*"; }
 warn()  { printf "${COL_YELLOW}[loom]${COL_RESET} %s\n" "$*"; }
 fatal() { printf "${COL_RED}[loom]${COL_RESET} %s\n" "$*" >&2; exit 1; }
 
+# Prompt for a required value; re-prompt if blank.
+# Usage: prompt_required VAR_NAME "Display label" [--secret]
+prompt_required() {
+  local var="$1" label="$2" secret="${3:-}"
+  local val=""
+  while [[ -z "$val" ]]; do
+    if [[ "$secret" == "--secret" ]]; then
+      read -rsp "  ${label}: " val; echo
+    else
+      read -rp  "  ${label}: " val
+    fi
+    [[ -z "$val" ]] && warn "Value required — please try again."
+  done
+  printf -v "$var" '%s' "$val"
+}
+
 command -v pnpm >/dev/null || fatal "pnpm not found. Install it first."
 command -v wrangler >/dev/null || pnpm dlx wrangler --version >/dev/null
 
 log "Installing dependencies…"
 pnpm install --frozen-lockfile
 
+# ── Prompt for secrets ──────────────────────────────────────────────────────
+
+printf "\n${COL_GREEN}[loom]${COL_RESET} Enter your Cloudflare details.\n"
+printf "       (All values are set as Worker secrets — never stored in files.)\n\n"
+
+prompt_required CF_ACCESS_TEAM_DOMAIN \
+  "Access team domain (e.g. yourcompany.cloudflareaccess.com)"
+
+prompt_required CF_ACCESS_AUD \
+  "Access application AUD tag (from Zero Trust → Access → your app)"
+
+prompt_required CF_ACCOUNT_ID \
+  "Cloudflare account ID (from: wrangler whoami)"
+
+prompt_required CF_API_TOKEN \
+  "Cloudflare API token (R2/KV/D1/AI/Browser edit permissions)" --secret
+
+# Auto-generate PLATFORM_JWT_SECRET if openssl is available; otherwise prompt.
+if command -v openssl >/dev/null 2>&1; then
+  PLATFORM_JWT_SECRET=$(openssl rand -base64 32)
+  log "PLATFORM_JWT_SECRET auto-generated."
+else
+  warn "openssl not found — enter a random 32+ byte string for PLATFORM_JWT_SECRET."
+  prompt_required PLATFORM_JWT_SECRET "PLATFORM_JWT_SECRET" --secret
+fi
+
+# ── Provision Cloudflare resources ──────────────────────────────────────────
+
+printf "\n"
 log "Provisioning Cloudflare resources (idempotent)…"
 
-# Create R2 buckets (idempotent)
 log "Creating R2 buckets…"
 wrangler r2 bucket create loom-workspace-snapshots 2>/dev/null || warn "Bucket loom-workspace-snapshots may already exist"
-wrangler r2 bucket create loom-publications 2>/dev/null || warn "Bucket loom-publications may already exist"
-wrangler r2 bucket create loom-tool-attachments 2>/dev/null || warn "Bucket loom-tool-attachments may already exist"
+wrangler r2 bucket create loom-publications        2>/dev/null || warn "Bucket loom-publications may already exist"
+wrangler r2 bucket create loom-tool-attachments    2>/dev/null || warn "Bucket loom-tool-attachments may already exist"
 
-# Create KV namespace (idempotent)
 log "Creating KV namespace…"
 KV_OUTPUT=$(wrangler kv:namespace create loom-platform 2>&1 || true)
 KV_ID=$(echo "$KV_OUTPUT" | grep -oE '[0-9a-f]{32}' | head -1 || true)
 
 if [[ -z "$KV_ID" ]]; then
-  # Try to get existing namespace ID
   log "KV namespace may already exist, attempting to list…"
   KV_LIST=$(wrangler kv:namespace list 2>/dev/null || true)
   KV_ID=$(echo "$KV_LIST" | grep -A1 '"title": "loom-platform"' | grep -oE '[0-9a-f]{32}' | head -1 || true)
 fi
 
-# Create D1 database (idempotent)
 log "Creating D1 database…"
 D1_OUTPUT=$(wrangler d1 create loom-platform 2>&1 || true)
 D1_ID=$(echo "$D1_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)
 
 if [[ -z "$D1_ID" ]]; then
-  # Try to get existing database ID
   log "D1 database may already exist, attempting to list…"
   D1_LIST=$(wrangler d1 list 2>/dev/null || true)
   D1_ID=$(echo "$D1_LIST" | grep -A1 '"name": "loom-platform"' | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)
 fi
 
-# Default IDs if we couldn't extract them
 KV_ID=${KV_ID:-"__KV_NAMESPACE_ID__"}
 D1_ID=${D1_ID:-"__D1_DATABASE_ID__"}
 
-log "Resources provisioned. Update your wrangler.jsonc with:"
+# ── Set Worker secrets ───────────────────────────────────────────────────────
+
+printf "\n"
+log "Setting Worker secrets…"
+
+printf '%s' "$CF_ACCESS_TEAM_DOMAIN" | wrangler secret put CF_ACCESS_TEAM_DOMAIN --name loom
+printf '%s' "$CF_ACCESS_AUD"         | wrangler secret put CF_ACCESS_AUD         --name loom
+printf '%s' "$CF_ACCOUNT_ID"         | wrangler secret put CF_ACCOUNT_ID         --name loom
+printf '%s' "$CF_API_TOKEN"          | wrangler secret put CF_API_TOKEN          --name loom
+printf '%s' "$PLATFORM_JWT_SECRET"   | wrangler secret put PLATFORM_JWT_SECRET   --name loom
+
+log "Secrets set."
+
+# ── Print wrangler.jsonc fragment ────────────────────────────────────────────
 
 cat <<EOF
 
@@ -81,14 +134,8 @@ ${COL_GREEN}=== Copy this into apps/web/wrangler.jsonc ===${COL_RESET}
 ${COL_GREEN}=== End of wrangler.jsonc fragment ===${COL_RESET}
 
 Next steps:
-  1. Copy the IDs above into apps/web/wrangler.jsonc
-  2. Set required secrets:
-     wrangler secret put CF_ACCESS_TEAM_DOMAIN
-     wrangler secret put CF_ACCESS_AUD
-     wrangler secret put CF_ACCOUNT_ID
-     wrangler secret put CF_API_TOKEN
-     wrangler secret put PLATFORM_JWT_SECRET
-  3. Run: pnpm dev
+  1. Paste the IDs above into apps/web/wrangler.jsonc and update LOOM_HOSTNAME + routes.
+  2. Commit and push.
+  3. Connect Workers Builds (see docs/DEPLOYMENT.md Step 5).
 
-See docs/DEPLOYMENT.md for details.
 EOF
