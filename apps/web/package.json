@@ -8,7 +8,7 @@
     "dev": "vite dev",
     "prebuild": "../../scripts/build-opencode-ui",
     "build": "vite build",
-    "deploy": "../../scripts/gen-wrangler-config && wrangler deploy --config wrangler.local.jsonc",
+    "deploy": "../../scripts/gen-wrangler-config && WRANGLER_LOG=${WRANGLER_LOG:-debug} wrangler deploy --config wrangler.local.jsonc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
