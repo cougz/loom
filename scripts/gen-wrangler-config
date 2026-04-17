@@ -28,13 +28,11 @@ fi
 : "${PLATFORM_KV_ID:?PLATFORM_KV_ID not set. Run ./scripts/setup or set as env var.}"
 : "${PLATFORM_D1_ID:?PLATFORM_D1_ID not set. Run ./scripts/setup or set as env var.}"
 : "${LOOM_HOSTNAME:?LOOM_HOSTNAME not set. Run ./scripts/setup or set as env var.}"
-LOOM_ZONE="${LOOM_ZONE:-${LOOM_HOSTNAME#*.}}"
 
 sed \
   -e "s|\"id\": \"__FILL_ME_FROM_SETUP_SCRIPT__\"|\"id\": \"${PLATFORM_KV_ID}\"|" \
   -e "s|\"database_id\": \"__FILL_ME_FROM_SETUP_SCRIPT__\"|\"database_id\": \"${PLATFORM_D1_ID}\"|" \
   -e "s|__LOOM_HOSTNAME__|${LOOM_HOSTNAME}|g" \
-  -e "s|__LOOM_ZONE__|${LOOM_ZONE}|g" \
   apps/web/wrangler.jsonc > apps/web/wrangler.local.jsonc
 
 echo "[loom] Generated apps/web/wrangler.local.jsonc"

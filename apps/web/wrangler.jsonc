@@ -70,13 +70,11 @@
     "LOOM_HOSTNAME": "__LOOM_HOSTNAME__"
   },
 
-  // Routes:
-  //   __LOOM_HOSTNAME__/*      main hostname (/dash, /mcp, /view) — /dash and /mcp behind Access
-  //   *.__LOOM_HOSTNAME__/*    sandbox preview URLs (token in hostname)
-  "routes": [
-    { "pattern": "__LOOM_HOSTNAME__/*", "zone_name": "__LOOM_ZONE__" },
-    { "pattern": "*.__LOOM_HOSTNAME__/*", "zone_name": "__LOOM_ZONE__" }
-  ],
+  // Custom domain for the main hostname. Cloudflare manages the DNS record.
+  // Sandbox preview URLs use the workers.dev subdomain (workers_dev: true).
+  "routes": [{ "pattern": "__LOOM_HOSTNAME__", "custom_domain": true }],
+
+  "workers_dev": true,
 
   "migrations": [
     // Both DOs require new_sqlite_classes — Cloudflare Containers are
