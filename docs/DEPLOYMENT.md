@@ -1,109 +1,94 @@
 # Deploying loom
 
-loom is designed to deploy via **Cloudflare Workers Builds** — no
-GitHub Actions, no external CI runners. Push to `main` on your fork,
-Cloudflare builds and deploys.
+loom deploys via **Cloudflare Workers Builds** — push to `main` on your
+fork, Cloudflare builds and deploys automatically. No GitHub Actions,
+no external CI runners.
 
-This document walks through the one-time setup. Plan for about 20
-minutes the first time.
+This document walks through the one-time setup. Plan for about 20 minutes.
+
+---
+
+## How config reaches Workers Builds
+
+`apps/web/wrangler.jsonc` in the repo is a **template** — it contains
+`__FILL_ME_FROM_SETUP_SCRIPT__` and `__LOOM_HOSTNAME__` placeholders and
+is **never modified by tooling**. Deployment-specific values (KV/D1 IDs,
+hostname) live in two gitignored files that `./scripts/setup` generates:
+
+| File | Purpose |
+|---|---|
+| `apps/web/.deploy-env` | Stores `PLATFORM_KV_ID`, `PLATFORM_D1_ID`, `LOOM_HOSTNAME` |
+| `apps/web/wrangler.local.jsonc` | Generated from the template + `.deploy-env`; used by `wrangler deploy` |
+
+Neither file is committed. For **Workers Builds** (which does a fresh
+checkout), the same three values are set as **environment variables in
+the dashboard**. `scripts/gen-wrangler-config` — called automatically by
+`pnpm deploy` — generates `wrangler.local.jsonc` from those env vars at
+deploy time, so `wrangler deploy` always has a fully resolved config
+regardless of whether it's running locally or in CI.
 
 ---
 
 ## Prerequisites
 
 1. **Cloudflare account** with:
-   - Workers Paid plan (for Containers and Durable Objects beyond the
-     free tier)
+   - Workers Paid plan (for Containers and Durable Objects)
    - Browser Rendering enabled (Dashboard → Compute → Browser Rendering)
-   - Workers AI available (on all accounts)
+   - Workers AI available (included on all accounts)
 
-2. **Custom domain** in your Cloudflare account with:
+2. **Custom domain** in your Cloudflare account:
    - `loom.yourcompany.com` — main hostname
    - `*.loom.yourcompany.com` — wildcard for sandbox preview URLs
-   - (`/view` shares the main hostname, no extra DNS record needed)
 
-3. **Cloudflare Access** set up on your account. Free tier is fine.
+3. **Cloudflare Access** configured on your account. Free tier is fine.
 
-4. **GitHub account.** Workers Builds pulls from here.
+4. **GitHub account** — Workers Builds pulls from here.
 
 ---
 
-## Step 1 — Fork the repo
+## Step 1 — Fork and clone
 
-Fork `github.com/<owner>/loom` to your own GitHub account or org.
-Clone your fork locally:
+Fork `github.com/<owner>/loom` to your own GitHub account or org, then:
 
     git clone git@github.com:<you>/loom.git
     cd loom
-    pnpm install
 
 ---
 
-## Step 2 — Provision Cloudflare resources
+## Step 2 — Configure Cloudflare Access
 
-Run the bootstrap script:
+Before running setup you need the Access AUD tag.
+
+1. **Zero Trust → Access → Applications → Add → Self-hosted.**
+2. **Application domain:** `loom.yourcompany.com` (no path suffix).
+   `/view` is on the same hostname; the Worker short-circuits Access
+   verification for `/view/*` in code, so no separate application is
+   needed.
+3. **Identity providers:** add the IdPs your team uses (Google, Okta,
+   GitHub, Azure AD, etc.).
+4. **Policies:** allow your team by email domain or SSO group.
+5. Save. Note the **Application AUD tag** from the overview page.
+6. Note your **team domain** (Zero Trust → Settings → General,
+   e.g. `yourcompany.cloudflareaccess.com`).
+
+---
+
+## Step 3 — Run setup
 
     ./scripts/setup
 
-It will:
+The script will prompt for:
 
-1. Prompt you to `wrangler login` if needed.
-2. Ask for your Cloudflare account ID and hostname.
-3. Create:
-   - R2 buckets: `loom-workspace-snapshots`, `loom-publications`,
-     `loom-tool-attachments`
-   - KV namespace: `loom-platform`
-   - D1 database: `loom-platform` (runs initial migrations)
-4. Print a `wrangler.jsonc` fragment with all the IDs filled in.
+| Prompt | Where to find it |
+|---|---|
+| Hostname | e.g. `loom.yourcompany.com` |
+| Access team domain | Zero Trust → Settings → General |
+| Access AUD tag | Zero Trust → Access → your app → Overview |
+| Account ID | `wrangler whoami` |
+| API token | See below |
 
-Copy the fragment into `apps/web/wrangler.jsonc`, replacing the
-`__FILL_ME_FROM_SETUP_SCRIPT__` placeholders. Commit and push.
-
----
-
-## Step 3 — Configure Cloudflare Access
-
-In the Cloudflare dashboard:
-
-1. **Zero Trust → Access → Applications → Add an application.**
-2. Choose **Self-hosted.**
-3. **Application domain:** `loom.yourcompany.com` (no path — the whole
-   hostname). `/view` is served on the same hostname; the Worker
-   short-circuits Access verification for `/view/*` paths in code, so
-   no extra Access application is needed.
-4. **Session duration:** whatever your team prefers.
-5. **Identity providers:** add the IdPs your team uses (Google, Okta,
-   GitHub, Azure AD, etc.).
-6. **Policies:**
-   - Policy 1: "Team access" — Action: Allow, Include: Emails ending
-     in `@yourcompany.com` (or a specific SSO group).
-   - Policy 2 (optional): "Admins" — Action: Allow, Include: specific
-     SSO group. Sets a custom group claim that loom reads to unlock
-     `/dash/admin`.
-7. Save. Note the **Application AUD tag** from the application's
-   overview page.
-8. Note your **team domain** (visible in Zero Trust → Settings →
-   General, e.g. `yourcompany.cloudflareaccess.com`).
-
----
-
-## Step 4 — Set Worker secrets
-
-From the repo root:
-
-    wrangler secret put CF_ACCESS_TEAM_DOMAIN   # e.g. yourcompany.cloudflareaccess.com
-    wrangler secret put CF_ACCESS_AUD           # the AUD tag from step 3
-    wrangler secret put CF_ACCOUNT_ID           # from wrangler whoami
-    wrangler secret put CF_API_TOKEN            # see below
-    wrangler secret put PLATFORM_JWT_SECRET     # 32+ random bytes
-
-`PLATFORM_JWT_SECRET` — generate with:
-
-    openssl rand -base64 32
-
-`CF_API_TOKEN` — create at **My Profile → API Tokens → Create Token →
-Custom Token.** Required permissions (framework-level provisioning
-only — this token is never exposed to the agent or the sandbox):
+**API token** — create at My Profile → API Tokens → Create Token →
+Custom Token with these permissions:
 
 | Scope | Permission |
 |---|---|
@@ -113,123 +98,127 @@ only — this token is never exposed to the agent or the sandbox):
 | Account → Workers AI | Read |
 | Account → Browser Rendering | Edit |
 
----
+The script will:
 
-## Step 5 — Wire up Workers Builds
+1. Create R2 buckets: `loom-workspace-snapshots`, `loom-publications`,
+   `loom-tool-attachments`
+2. Create KV namespace: `loom-platform`
+3. Create D1 database: `loom-platform`
+4. Set all five Worker secrets (`CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`,
+   `CF_ACCOUNT_ID`, `CF_API_TOKEN`, `PLATFORM_JWT_SECRET`)
+5. Write `apps/web/.deploy-env` (gitignored) with the resource IDs and
+   hostname
+6. Generate `apps/web/wrangler.local.jsonc` (gitignored) from the
+   template
 
-In the Cloudflare dashboard, once you've done a first manual
-`pnpm --filter @loom/web deploy` so the Worker exists:
-
-1. **Workers & Pages → your-loom-worker → Settings → Builds → Connect.**
-2. Pick GitHub as the provider, authorise Cloudflare on your fork.
-3. **Repository:** `github.com/<you>/loom`
-4. **Production branch:** `main`
-5. **Build command:**
-
-        pnpm install --frozen-lockfile && pnpm --filter @loom/web build
-
-6. **Deploy command:**
-
-        pnpm --filter @loom/web deploy
-
-7. **Root directory:** `/`
-8. **Environment variables** — the deploy command calls
-   `scripts/gen-wrangler-config`, which reads these from the CI
-   environment to generate the wrangler config without modifying
-   any tracked files:
-
-   | Variable | Value |
-   |---|---|
-   | `PLATFORM_KV_ID` | KV namespace ID from `./scripts/setup` output |
-   | `PLATFORM_D1_ID` | D1 database ID from `./scripts/setup` output |
-   | `LOOM_HOSTNAME` | e.g. `loom.yourcompany.com` |
-
-9. Save.
-10. (Optional) Enable **Preview deployments** for non-main branches if
-    you want PRs to get ephemeral URLs.
-
-From now on, every push to `main` builds and deploys automatically.
-You can watch progress in the **Builds** tab.
+At the end it prints the three values you will need for Workers Builds
+environment variables in Step 5.
 
 ---
 
-## Step 6 — Build and publish the sandbox container
+## Step 4 — First manual deploy
 
-The container image is referenced by `apps/web/wrangler.jsonc`. Build
-and push it:
+Workers Builds requires the Worker to exist before you can connect it.
+Do this once:
+
+    pnpm --filter @loom/web deploy
+
+This calls `scripts/gen-wrangler-config` (reads `apps/web/.deploy-env`
+→ generates `wrangler.local.jsonc`) then deploys with the resolved
+config. Nothing is committed to git.
+
+---
+
+## Step 5 — Build the container image
 
     wrangler containers build -t loom-sandbox:v1 -p .
 
-The Cloudflare Containers platform stores the image. Update
-`apps/web/wrangler.jsonc` with the image tag if you change it, then
-redeploy the Worker.
+This builds the Dockerfile from the repo root and registers the image
+with Cloudflare's container registry. Run this again any time the
+Dockerfile changes.
+
+---
+
+## Step 6 — Wire up Workers Builds
+
+Workers & Pages → `loom` → Settings → Builds → **Connect**:
+
+| Field | Value |
+|---|---|
+| Repository | `github.com/<you>/loom` |
+| Production branch | `main` |
+| Build command | `pnpm install --frozen-lockfile && pnpm --filter @loom/web build` |
+| Deploy command | `pnpm --filter @loom/web deploy` |
+| Root directory | `/` |
+
+**Environment variables** — Workers Builds does a fresh checkout with
+no `apps/web/.deploy-env`, so `scripts/gen-wrangler-config` reads these
+from the CI environment instead. Copy the values printed at the end of
+`./scripts/setup`:
+
+| Variable | Value |
+|---|---|
+| `PLATFORM_KV_ID` | KV namespace ID |
+| `PLATFORM_D1_ID` | D1 database ID |
+| `LOOM_HOSTNAME` | e.g. `loom.yourcompany.com` |
+
+With these set, every push to `main` generates a fresh `wrangler.local.jsonc`
+at deploy time and deploys with the correct bindings — without any
+deployment-specific data ever touching the git history.
 
 ---
 
 ## Step 7 — Smoke-test
 
-1. Open `https://loom.yourcompany.com/dash` in your browser.
-2. Access redirects you to sign in.
-3. After sign-in, the placeholder page loads.
-4. Once M2 lands, the OpenCode iframe loads from your sandbox.
-5. Once M3 lands, `loom-code`, `loom-ai`, `loom-render` are wired
-   through the framework endpoints.
+1. Open `https://loom.yourcompany.com/dash`.
+2. Cloudflare Access redirects you to sign in.
+3. After sign-in, the dash chrome loads with the OpenCode iframe. The
+   first load takes ~30 seconds while the container boots.
+4. Subsequent loads are instant (container stays warm via `keepAlive`).
 
 If anything fails:
 
-- **401 on `/dash`** — check `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD`
-  match the Access application.
-- **Preview URL doesn't resolve** — wildcard DNS not set, or route
-  pattern in `wrangler.jsonc` missing.
-- **Container doesn't start** — check `wrangler containers build` ran
-  and the image tag in `wrangler.jsonc` matches.
-- **`/view/<shortId>` returns 401** — the Worker's `/view/*` bypass
-  is broken; `/view` should never require auth.
+| Symptom | Likely cause |
+|---|---|
+| Redirect loop on `/dash` | `CF_ACCESS_TEAM_DOMAIN` or `CF_ACCESS_AUD` secret doesn't match the Access application |
+| OpenCode iframe blank / error | Container image not built yet — run Step 5 |
+| Preview URL (`*.loom.yourcompany.com`) 404 | Wildcard DNS not set, or `LOOM_HOSTNAME` env var wrong in Workers Builds |
+| `/view/<shortId>` returns 401 | `/view/*` Access bypass is broken — should never require auth |
+| Deploy fails with "placeholder" in config | `PLATFORM_KV_ID` / `PLATFORM_D1_ID` / `LOOM_HOSTNAME` not set in Workers Builds env vars |
 
 ---
 
 ## Updating loom
 
-- Pull upstream into your fork, merge the diff into your `main`.
-- Workers Builds picks up the push and deploys.
-- Migrations in `PLATFORM_D1` run automatically on first request after
-  deploy (see `apps/web/src/server/migrations.ts`).
-- No manual steps unless a release note calls them out.
+Pull upstream into your fork and push:
+
+    git fetch upstream
+    git merge upstream/main
+    git push
+
+Workers Builds picks up the push and deploys. No manual steps unless a
+release note calls them out.
 
 ---
 
-## Dev mode (local development)
+## Local development
 
-For local development without Cloudflare Access, loom includes a dev
-mode that uses mock authentication:
+Run `wrangler dev` against your real Cloudflare resources:
 
     pnpm dev
 
-This starts `wrangler dev` with the following behavior:
+This uses `apps/web/wrangler.local.jsonc` (generated by setup) so your
+local dev Worker has access to the real KV, D1, and R2 bindings.
 
-1. **Mock JWT**: When `CF_ACCESS_TEAM_DOMAIN` is not set (the default
-   in `.dev.vars`), the Worker operates in dev mode.
-2. **Bypass Access**: Requests without a valid Access JWT fall back to
-   a mock auth context (`userId: "devuser1234567890123"`,
-   `email: "dev@localhost"`).
-3. **Testing MCP**: You can test the `/mcp` endpoint with curl:
+For auth, `wrangler dev` sets `CF_ACCESS_TEAM_DOMAIN` to empty by
+default (via `.dev.vars`), which puts the Worker in dev mode: any
+request without a valid Access JWT falls back to a mock context
+(`userId: devuser1234567890123`, `email: dev@localhost`).
 
-       curl -X POST http://localhost:8787/mcp \
-         -H "Content-Type: application/json" \
-         -d '{"method": "tools/list", "params": {}}'
+To test with real Access JWTs locally, add to `.dev.vars`:
 
-4. **View stub**: `/view/<shortId>` returns 404 as expected (full
-   implementation lands in M6).
-
-To test with real Access JWT:
-
-1. Set the required secrets in `.dev.vars`:
-   
-       CF_ACCESS_TEAM_DOMAIN=yourcompany.cloudflareaccess.com
-       CF_ACCESS_AUD=your-access-aud
-
-2. Include the `Cf-Access-Jwt-Assertion` header in requests, or
-3. Include the `Authorization: Bearer <token>` header.
+    CF_ACCESS_TEAM_DOMAIN=yourcompany.cloudflareaccess.com
+    CF_ACCESS_AUD=your-access-aud
 
 ---
 
