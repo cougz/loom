@@ -24,6 +24,8 @@ import { proxyToSandbox as sdkProxyToSandbox } from "@cloudflare/sandbox";
 import type { Sandbox as SandboxDO } from "./durable-objects/index.js";
 import { createMcpServerHandler } from "./mcp/server.js";
 import { type AuthContext, authenticateRequest, createMockAuthContext } from "./server/auth.js";
+import { errorFields, log } from "./server/log.js";
+import { type EnsureOpencodeOptions, ensureOpencodeRunning } from "./server/opencode-bootstrap.js";
 import { proxyOpenCode } from "./server/opencode-proxy.js";
 import { handleViewRequest } from "./view/router.js";
 
@@ -116,10 +118,31 @@ async function getAuthContext(request: Request, env: Env): Promise<AuthContext> 
 }
 
 /**
+ * Build the options blob shared by every ensureOpencodeRunning call.
+ * Throws if PLATFORM_JWT_SECRET is unset — OpenCode cannot authenticate
+ * itself to /mcp without it, and we'd rather fail loudly than ship a
+ * sandbox that can't call home.
+ */
+function ensureOpencodeOptions(request: Request, env: Env): EnsureOpencodeOptions {
+  const secret = env.PLATFORM_JWT_SECRET;
+  if (!secret) {
+    throw new Error(
+      "PLATFORM_JWT_SECRET is not configured. Set it as a Worker secret: `wrangler secret put PLATFORM_JWT_SECRET`.",
+    );
+  }
+  const url = new URL(request.url);
+  return {
+    loomHostname: env.LOOM_HOSTNAME,
+    platformJwtSecret: secret,
+    corsOrigin: url.origin,
+  };
+}
+
+/**
  * Main fetch handler.
  */
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const hostname = getHostname(request);
     const loomHostname = env.LOOM_HOSTNAME;
@@ -166,7 +189,12 @@ export default {
           return new Response("Forbidden", { status: 403 });
         }
 
-        const proxied = await proxyOpenCode(request, env.SANDBOX, auth.userId);
+        const proxied = await proxyOpenCode(
+          request,
+          env.SANDBOX,
+          auth.userId,
+          ensureOpencodeOptions(request, env),
+        );
         if (proxied) return proxied;
         // Shouldn't happen given the path-prefix check above, but be explicit.
         return new Response("Not Found", { status: 404 });
@@ -175,7 +203,12 @@ export default {
         // to the Access login, because these paths are called by XHR/fetch
         // from the embedded iframe, not navigated to directly.
         const message = err instanceof Error ? err.message : String(err);
-        console.error("[/opencode] auth error:", message);
+        log.warn("opencode.auth_failed", {
+          component: "worker-entry",
+          event: "opencode_auth_failed",
+          pathname: url.pathname,
+          ...errorFields(err),
+        });
         return new Response(JSON.stringify({ error: "Unauthorized", message }), {
           status: 401,
           headers: { "Content-Type": "application/json" },
@@ -192,9 +225,38 @@ export default {
         // bundle. The iframe loads `/opencode-ui/embed.html?serverUrl=...`
         // which imports the bundle and points all API calls through
         // `/opencode/<userId>/...` — proxied to the container by the handler
-        // above. The Worker does not start OpenCode here; it starts lazily
-        // on the first API call.
+        // above.
         if (url.pathname === "/dash" || url.pathname === "/dash/") {
+          // Kick off container warmup before the HTML is even rendered,
+          // so by the time the browser parses the iframe <iframe src=...>
+          // and hits /opencode/<uid>/... the container boot is already in
+          // flight. waitUntil keeps the promise alive past the response.
+          try {
+            const warmOpts = ensureOpencodeOptions(request, env);
+            ctx.waitUntil(
+              ensureOpencodeRunning(env.SANDBOX, auth.userId, warmOpts).catch((err) => {
+                log.error("dash.warmup_failed", {
+                  component: "dash",
+                  userId: auth.userId,
+                  event: "warmup_failed",
+                  ...errorFields(err),
+                });
+              }),
+            );
+          } catch (err) {
+            // Config error (e.g. missing PLATFORM_JWT_SECRET) — surface as 500
+            // rather than silently skipping the warmup.
+            log.error("dash.config_error", {
+              component: "dash",
+              event: "config_error",
+              ...errorFields(err),
+            });
+            return new Response(
+              `loom is misconfigured: ${err instanceof Error ? err.message : String(err)}`,
+              { status: 500, headers: { "Content-Type": "text/plain; charset=utf-8" } },
+            );
+          }
+
           const ocServerUrl = `${url.origin}/opencode/${auth.userId}`;
           const iframeSrc =
             `/opencode-ui/embed.html?serverUrl=${encodeURIComponent(ocServerUrl)}` +

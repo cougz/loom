@@ -11,19 +11,22 @@
  * check before invoking; this module only handles sandbox routing and
  * response streaming.
  *
- * Structure mirrors the reference proxy in let-it-slide
- * (cloudflare/ai-agents/let-it-slide — app/src/server/opencode-proxy.ts),
- * adapted for loom's multi-user tenancy model where the path userId must
- * already be verified against the caller's JWT.
+ * Before every containerFetch we call ensureOpencodeRunning, which is
+ * idempotent and cheap on a warm sandbox (one health probe). Without
+ * it, the first proxy hit after a cold container start fails with
+ * "The container is not running, consider calling start()" (if we skip
+ * boot) or "Container crashed while checking for ports" (if we boot but
+ * don't actually start opencode serve).
  */
 
 import { getSandbox } from "@cloudflare/sandbox";
 import type { UserId } from "./auth.js";
-import { matchProxyTarget, OPENCODE_PORT } from "./opencode-proxy-routing.js";
+import { errorFields, log } from "./log.js";
+import { type EnsureOpencodeOptions, ensureOpencodeRunning } from "./opencode-bootstrap.js";
+import { matchProxyTarget } from "./opencode-proxy-routing.js";
 import { NULL_BODY_STATUSES, sanitizedErrorResponse } from "./proxy-utils.js";
 
-const SANDBOX_START_TIMEOUT_MS = 30_000;
-const CONTAINER_FETCH_TIMEOUT_MS = 30_000;
+const CONTAINER_FETCH_TIMEOUT_MS = 60_000;
 
 const OAUTH_CALLBACK_CSP = [
   "default-src 'none'",
@@ -60,13 +63,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: strin
   });
 }
 
-function getErrorLogFields(error: unknown): Record<string, string> {
-  if (error instanceof Error) {
-    return { name: error.name, message: error.message, stack: error.stack ?? "" };
-  }
-  return { name: "UnknownError", message: String(error), stack: "" };
-}
-
 /**
  * Route and forward a request to the user's sandbox container. Returns null
  * when the URL isn't an OpenCode proxy path; caller falls through.
@@ -78,6 +74,7 @@ export async function proxyOpenCode(
   request: Request,
   sandboxNamespace: SandboxNamespace,
   verifiedUserId: UserId,
+  ensureOpts: EnsureOpencodeOptions,
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const target = matchProxyTarget(url);
@@ -85,31 +82,29 @@ export async function proxyOpenCode(
 
   // Defence in depth — caller should have already checked this.
   if (target.sandboxId !== verifiedUserId) {
+    log.warn("opencode.proxy.forbidden_path_mismatch", {
+      component: "opencode-proxy",
+      userId: verifiedUserId,
+      event: "path_user_mismatch",
+      pathUserId: target.sandboxId,
+      pathname: url.pathname,
+    });
     return new Response("Forbidden", { status: 403 });
   }
 
   try {
+    // Make sure the sandbox is booted AND OpenCode is listening on 4096
+    // BEFORE we try to containerFetch. This is the fix for both
+    // "container is not running" and "Container crashed while checking
+    // for ports" — see ./opencode-bootstrap.ts for the full lifecycle.
+    await ensureOpencodeRunning(sandboxNamespace, verifiedUserId, ensureOpts);
+
     const sandbox = getSandbox(sandboxNamespace as never, target.sandboxId, {
       keepAlive: true,
       normalizeId: true,
     });
-    const isOAuthCallback = url.pathname.startsWith("/opencode-oauth/");
 
-    if (isOAuthCallback) {
-      // OAuth callbacks can arrive before the container is warm. Ensure the
-      // port is listening so OpenCode's in-process callback listener is up
-      // when we forward.
-      //
-      // NOTE: OAuth callbacks run through this proxy without re-verifying
-      // the Access JWT on the query string — OpenCode's OAuth `state`
-      // parameter is the CSRF boundary. We still require the outer Access
-      // JWT (checked by the caller) to get here.
-      await withTimeout(
-        sandbox.start(undefined, { portToCheck: OPENCODE_PORT }),
-        SANDBOX_START_TIMEOUT_MS,
-        "sandbox.start",
-      );
-    }
+    const isOAuthCallback = url.pathname.startsWith("/opencode-oauth/");
 
     const targetUrl = new URL(target.rest + url.search, `http://localhost:${target.port}`);
     const proxyRequest = new Request(targetUrl.toString(), {
@@ -143,6 +138,12 @@ export async function proxyOpenCode(
     if (!response.ok) {
       const body = await response.text();
       if (body.includes("not listening") || body.includes("Error proxying")) {
+        log.warn("opencode.proxy.upstream_not_ready", {
+          component: "opencode-proxy",
+          userId: verifiedUserId,
+          event: "upstream_not_ready",
+          pathname: url.pathname,
+        });
         return new Response(
           JSON.stringify({ error: "OpenCode server is starting, please retry" }),
           {
@@ -166,12 +167,13 @@ export async function proxyOpenCode(
       headers: responseHeaders,
     });
   } catch (error) {
-    console.error("OpenCode proxy request failed", {
-      event: "opencode_proxy_request_failed",
-      sandboxId: target.sandboxId,
+    log.error("opencode.proxy.request_failed", {
+      component: "opencode-proxy",
+      userId: verifiedUserId,
+      event: "proxy_request_failed",
       pathname: url.pathname,
       targetPort: target.port,
-      ...getErrorLogFields(error),
+      ...errorFields(error),
     });
     return Response.json(
       { error: error instanceof Error ? error.message : "Proxy error" },
