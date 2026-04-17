@@ -539,23 +539,24 @@ code yet.
 - Worker proxies `/dash/oc/*` to the sandbox's port 4096.
 - Dash chrome renders an iframe of OpenCode's web UI.
 
-### M3 — MCP handshake + framework primitives wired
-- `/mcp` uses `createMcpHandler` + platform JWT.
-- OpenCode in the sandbox preconfigured to connect.
-- **Worker Loader** binding in place; `loom-code` CLI in the sandbox
-  image wired up end-to-end, with the `loom.*` namespace exposing
-  workspace read/list/write, publication lookup, and the AI / Browser
-  helpers.
-- Workers AI binding available via `loom-ai run <model>` in the
-  container (thin wrapper around the AI helper in the `loom.*`
-  namespace).
-- Browser Rendering available via `loom-render screenshot|pdf|scrape
-  <url>` similarly.
-- `PLATFORM_KV` + `PLATFORM_D1` query helpers in place; migrations run.
-- Workspace snapshots wired: sidecar + R2 + restore on cold start.
-- OpenCode default system prompt updated to describe the three-tier
-  compute hierarchy (Code Mode → Sandbox → /view) so the agent reaches
-  for the right one per task.
+### M3 — OpenCode handshake + embed
+See [`docs/M3.md`](./M3.md) for the full implementation spec.
+
+- **OpenCode mount bundle**: pre-built static frontend served at
+  `/opencode-ui/` as Worker assets. Built by `scripts/build-opencode-ui`
+  (runs as `prebuild`). Never proxied through the Worker HTML path.
+- **New proxy routes**: `/opencode/<userId>/...` (API proxy, Access-gated)
+  and `/opencode-oauth/<userId>/...` (OAuth callback). Replaces M2
+  `/dash/oc/*`.
+- **Static embed**: iframe points to
+  `/opencode-ui/embed.html?serverUrl=/opencode/<userId>`. Assets served
+  from `/opencode-ui/`, no subpath collision.
+- **Platform JWT**: minted at sandbox spawn, written into
+  `opencode.jsonc` inside the container so OpenCode connects to `/mcp`
+  without the user re-authenticating.
+- **`/mcp` dual auth**: accepts Access JWT or platform JWT.
+- **Dockerfile simplified**: run as root, `ENV PATH` instead of binary
+  copy; removes M2 permission issues.
 
 ### M4 — Tools v1 (private)
 - Tool data model in `UserRegistry` DO.
