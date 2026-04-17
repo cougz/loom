@@ -121,7 +121,7 @@ environment variables in Step 5.
 Workers Builds requires the Worker to exist before you can connect it.
 Do this once:
 
-    pnpm --filter @loom/web deploy
+    pnpm --filter @loom/web run deploy
 
 This calls `scripts/gen-wrangler-config` (reads `apps/web/.deploy-env`
 → generates `wrangler.local.jsonc`) then deploys with the resolved
@@ -148,7 +148,7 @@ Workers & Pages → `loom` → Settings → Builds → **Connect**:
 | Repository | `github.com/<you>/loom` |
 | Production branch | `main` |
 | Build command | `pnpm install --frozen-lockfile && pnpm --filter @loom/web build` |
-| Deploy command | `pnpm --filter @loom/web deploy` |
+| Deploy command | `pnpm --filter @loom/web run deploy` |
 | Root directory | `/` |
 
 **Environment variables** — Workers Builds does a fresh checkout with
