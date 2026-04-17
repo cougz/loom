@@ -50,6 +50,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN curl -fsSL https://opencode.ai/install | bash \
     && ln -sf /root/.opencode/bin/opencode /usr/local/bin/opencode
 
+# Ensure the sandbox user exists (base image may not include it yet)
+RUN id -u user > /dev/null 2>&1 || useradd --create-home --shell /bin/bash user
+
 # Workspace + OpenCode config dirs owned by the sandbox user
 RUN mkdir -p ${LOOM_WORKSPACE} ${OPENCODE_DIR} \
     && chown -R user:user ${LOOM_WORKSPACE} ${OPENCODE_DIR}
