@@ -49,8 +49,6 @@ with their team.
 - A public multi-tenant SaaS. loom is a platform *you run for your team*.
 - Primitive-level MCP tools (no `r2_put_object`, no `d1_execute`, no
   `ai_run`). Primitives are framework concerns.
-- Custom Worker deployment for end-users at runtime. v1 does not use
-  Workers for Platforms.
 - Custom agent loop. OpenCode does agent.
 
 ---
@@ -340,13 +338,6 @@ Plumbed into two places:
   for `/view` publications are wanted later, it becomes a framework
   feature — operator-configured zones, loom-managed record lifecycle —
   not an exposed tool.
-
-### Not used in v1
-
-- **Workers for Platforms.** Previous drafts used it for agent-deployed
-  skills; removed. Tools in loom are prompt templates, not Workers.
-- **Cloudflare Queues, Vectorize, Hyperdrive, Cache API.** Possibly
-  framework additions later, but not in v1.
 
 ---
 
@@ -649,4 +640,3 @@ code yet.
 | Single Worker | Pages + Worker | Pages de-emphasised; static assets on Workers is the path. |
 | Workers Builds | GitHub Actions | Zero-config CI/CD, official CF path. |
 | Biome | ESLint + Prettier | One tool, zero config. |
-| No Workers for Platforms | Deploy user-authored Workers | Out of v1 scope; use `/view` proxy mode for user-authored live services. |

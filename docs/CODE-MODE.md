@@ -172,7 +172,6 @@ Not in the initial surface (by design):
 
 ## What Code Mode is NOT
 
-- Not Dynamic Dispatch. We are not using Workers for Platforms.
 - Not a mechanism for users to deploy permanent code. A snippet runs
   once, returns a value, and is forgotten. If the user wants reuse,
   they templatize the agent's trajectory into a tool — see

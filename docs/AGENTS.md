@@ -82,9 +82,6 @@ Treat these as hard rules. Violating any is a blocker.
 11. **Publishing to `/view` is filesystem-driven.** The agent writes to
     `/home/user/workspace/.publish/<alias>/`; a sidecar syncs to R2.
     MCP operations on `view.*` are for control only.
-12. **No Workers for Platforms in v1.** Tools are not deployed Workers.
-    They are prompt templates. If you find yourself reaching for a
-    dispatch namespace, stop and open a design issue.
 
 ---
 
