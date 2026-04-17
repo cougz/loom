@@ -186,9 +186,15 @@ export default {
     if (url.pathname.startsWith("/dash/oc/") || url.pathname === "/dash/oc") {
       try {
         const auth = await getAuthContext(request, env);
-        return proxyOcRequest(request, env, auth);
-      } catch {
-        return Response.redirect(`/cdn-cgi/access/login/${url.hostname}`, 302);
+        return await proxyOcRequest(request, env, auth);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? (err.stack ?? "") : "";
+        console.error("[/dash/oc] error:", message, stack);
+        return new Response(`[loom] /dash/oc error: ${message}\n\n${stack}`, {
+          status: 500,
+          headers: { "Content-Type": "text/plain" },
+        });
       }
     }
 
