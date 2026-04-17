@@ -47,10 +47,16 @@ pnpm install --frozen-lockfile
 printf "\n${COL_GREEN}[loom]${COL_RESET} Enter your Cloudflare details.\n\n"
 
 prompt_required LOOM_HOSTNAME \
-  "Hostname for loom (e.g. loom.yourcompany.com)"
+  "Hostname for loom — no https:// (e.g. loom.yourcompany.com)"
+LOOM_HOSTNAME="${LOOM_HOSTNAME#https://}"
+LOOM_HOSTNAME="${LOOM_HOSTNAME#http://}"
+LOOM_HOSTNAME="${LOOM_HOSTNAME%/}"
 
 prompt_required CF_ACCESS_TEAM_DOMAIN \
-  "Access team domain (e.g. yourcompany.cloudflareaccess.com)"
+  "Access team domain — no https:// (e.g. yourcompany.cloudflareaccess.com)"
+CF_ACCESS_TEAM_DOMAIN="${CF_ACCESS_TEAM_DOMAIN#https://}"
+CF_ACCESS_TEAM_DOMAIN="${CF_ACCESS_TEAM_DOMAIN#http://}"
+CF_ACCESS_TEAM_DOMAIN="${CF_ACCESS_TEAM_DOMAIN%/}"
 
 prompt_required CF_ACCESS_AUD \
   "Access application AUD tag (Zero Trust → Access → your app)"
