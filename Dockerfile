@@ -21,6 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV LOOM_WORKSPACE=/home/user/workspace
 ENV OPENCODE_DIR=/home/user/.opencode
 ENV LOOM_PUBLISH_DIR=/home/user/workspace/.publish
+ENV PATH="/usr/local/bin:$PATH"
 
 # Base CLI tooling so the agent doesn't waste turns installing it
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -46,11 +47,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g pnpm@latest
 
-# OpenCode install — copy to /usr/local/bin so the sandbox user can execute it
-# (symlinking /root/.opencode/bin/opencode fails because /root/ is chmod 700)
+# OpenCode install — copy binary to /usr/local/bin so the sandbox user can
+# execute it (/root/ is chmod 700, symlinks into it fail for non-root users).
+# The final `opencode --version` verifies the binary is in PATH and working;
+# the build fails here if the install silently produced nothing.
 RUN curl -fsSL https://opencode.ai/install | bash \
-    && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
-    && chmod 755 /usr/local/bin/opencode
+    && cp "$(find /root -name opencode -type f | head -1)" /usr/local/bin/opencode \
+    && chmod 755 /usr/local/bin/opencode \
+    && opencode --version
 
 # Ensure the sandbox user exists (base image may not include it yet)
 RUN id -u user > /dev/null 2>&1 || useradd --create-home --shell /bin/bash user
