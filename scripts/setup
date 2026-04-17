@@ -120,16 +120,11 @@ log "Secrets set."
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 
-cat <<EOF
-
-${COL_GREEN}Setup complete.${COL_RESET}
-
-Next steps:
-  1. pnpm --filter @loom/web deploy
-  2. wrangler containers build -t loom-sandbox:v1 -p .
-  3. Connect Workers Builds — set these env vars in the dashboard:
-       PLATFORM_KV_ID = ${KV_ID}
-       PLATFORM_D1_ID = ${D1_ID}
-       LOOM_HOSTNAME  = ${LOOM_HOSTNAME}
-
-EOF
+printf "\n${COL_GREEN}Setup complete.${COL_RESET}\n\n"
+printf "Next steps:\n"
+printf "  1. pnpm --filter @loom/web deploy\n"
+printf "  2. wrangler containers build -t loom-sandbox:v1 -p .\n"
+printf "  3. Connect Workers Builds — set these env vars in the dashboard:\n"
+printf "       PLATFORM_KV_ID = %s\n" "$KV_ID"
+printf "       PLATFORM_D1_ID = %s\n" "$D1_ID"
+printf "       LOOM_HOSTNAME  = %s\n\n" "$LOOM_HOSTNAME"
