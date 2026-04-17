@@ -2,24 +2,29 @@
  * Main Worker entry point.
  *
  * Single deployment hosts:
- *   - /dash/*    — Dash chrome (Access-gated); /dash/oc/* proxied to OpenCode
- *   - /mcp       — MCP server (Access-gated)
- *   - /view/*    — Public publishing (no auth)
- *   - *.hostname — Sandbox preview URLs (SDK handles routing)
+ *   - /dash/*                      — Dash chrome (Access-gated)
+ *   - /opencode-ui/*               — Static OpenCode mount bundle (no JWT)
+ *   - /opencode/<userId>/*         — OpenCode API proxy (Access-gated)
+ *   - /opencode-oauth/<userId>/*   — OpenCode OAuth callback proxy (Access-gated)
+ *   - /mcp                         — MCP server (Access or platform JWT)
+ *   - /view/*                      — Public publishing (no auth)
+ *   - *.hostname                   — Sandbox preview URLs (SDK routing)
  *
- * Dispatch order (per SPEC.md Component map):
- *   1. *.hostname → proxyToSandbox()    (SDK — preview URL token in hostname)
- *   2. /view/*    → view router          (no JWT)
- *   3. /dash/oc/* → proxyOcRequest()    (JWT required — OpenCode web UI proxy)
- *   4. /dash/*    → dash chrome HTML    (JWT required)
- *   5. /mcp       → MCP handler         (JWT required)
+ * Dispatch order:
+ *   1. *.hostname                → proxyToSandbox()       (SDK — token in hostname)
+ *   2. /view/*                   → view router            (no JWT)
+ *   3. /opencode-ui/*            → ASSETS                 (no JWT)
+ *   4. /opencode/<userId>/*,
+ *      /opencode-oauth/<userId>/* → proxyOpenCode()       (Access JWT required)
+ *   5. /dash/*                   → dash chrome HTML       (Access JWT required)
+ *   6. /mcp                      → MCP handler            (Access or platform JWT)
  */
 
-import { getSandbox, proxyToSandbox as sdkProxyToSandbox } from "@cloudflare/sandbox";
-import { createOpencodeServer, proxyToOpencodeServer } from "@cloudflare/sandbox/opencode";
+import { proxyToSandbox as sdkProxyToSandbox } from "@cloudflare/sandbox";
 import type { Sandbox as SandboxDO } from "./durable-objects/index.js";
 import { createMcpServerHandler } from "./mcp/server.js";
 import { type AuthContext, authenticateRequest, createMockAuthContext } from "./server/auth.js";
+import { proxyOpenCode } from "./server/opencode-proxy.js";
 import { handleViewRequest } from "./view/router.js";
 
 export type Env = {
@@ -42,6 +47,7 @@ export type Env = {
   // Secrets
   CF_ACCESS_TEAM_DOMAIN: string;
   CF_ACCESS_AUD: string;
+  PLATFORM_JWT_SECRET?: string;
 
   // Vars
   SANDBOX_TRANSPORT: string;
@@ -74,54 +80,6 @@ function isSandboxPreview(hostname: string, loomHostname: string): boolean {
 async function proxyToSandbox(request: Request, env: Env): Promise<Response | null> {
   // SDK expects { Sandbox: DurableObjectNamespace } — our binding is SANDBOX
   return sdkProxyToSandbox(request, { Sandbox: env.SANDBOX });
-}
-
-/**
- * Proxy requests to /dash/oc/* to the user's OpenCode instance.
- *
- * - Starts OpenCode inside the container if not already running.
- * - For initial HTML GET requests (no ?url=), redirects to inject
- *   ?url=<origin>/dash/oc so OpenCode's frontend routes API calls
- *   through our proxy path instead of directly to localhost:4096.
- * - All subsequent requests strip /dash/oc and are forwarded verbatim
- *   to port 4096 inside the container.
- */
-async function proxyOcRequest(request: Request, env: Env, auth: AuthContext): Promise<Response> {
-  const sandbox = getSandbox(env.SANDBOX, auth.userId, {
-    keepAlive: true,
-    normalizeId: true,
-  });
-
-  const server = await createOpencodeServer(sandbox, {
-    directory: "/home/user/workspace",
-  });
-
-  const url = new URL(request.url);
-  const accept = request.headers.get("accept") ?? "";
-
-  // For HTML GET requests without ?url=, redirect to inject the proxy base URL.
-  // OpenCode's frontend uses ?url= as the base for all API calls; pointing it
-  // to /dash/oc ensures every call passes through this proxy handler.
-  if (
-    request.method === "GET" &&
-    !url.searchParams.has("url") &&
-    (accept.includes("text/html") || url.pathname === "/dash/oc" || url.pathname === "/dash/oc/")
-  ) {
-    url.searchParams.set("url", `${url.origin}/dash/oc`);
-    return Response.redirect(url.toString(), 302);
-  }
-
-  // Strip the /dash/oc prefix before forwarding to the container.
-  // OpenCode serves at its root; it has no knowledge of our proxy prefix.
-  url.pathname = url.pathname.replace(/^\/dash\/oc/, "") || "/";
-  const rewritten = new Request(url.toString(), {
-    method: request.method,
-    headers: new Headers(request.headers),
-    body: request.body,
-    redirect: "manual",
-  });
-
-  return proxyToOpencodeServer(rewritten, sandbox, server);
 }
 
 /**
@@ -181,33 +139,67 @@ export default {
       return handleViewRequest(request, env);
     }
 
-    // 3. /dash/oc/* — OpenCode web UI proxy (JWT required)
-    // Must be checked before the generic /dash/* handler below.
-    if (url.pathname.startsWith("/dash/oc/") || url.pathname === "/dash/oc") {
+    // 3. /opencode-ui/* — static mount bundle served as Worker assets.
+    // No JWT: the bundle is static JS/CSS/HTML, safe to expose publicly.
+    // Access gating for the *iframe parent* is enforced by /dash.
+    if (url.pathname.startsWith("/opencode-ui/")) {
+      return env.ASSETS.fetch(request);
+    }
+
+    // 4. /opencode/<userId>/* + /opencode-oauth/<userId>/*
+    //    Both require a verified Access JWT whose derived userId matches the
+    //    path segment. The OAuth callback is still behind Access — OpenCode's
+    //    own `state` parameter is the CSRF boundary on top of that.
+    if (url.pathname.startsWith("/opencode/") || url.pathname.startsWith("/opencode-oauth/")) {
       try {
         const auth = await getAuthContext(request, env);
-        return await proxyOcRequest(request, env, auth);
+
+        // Extract the first path segment (sandboxId from URL)
+        const prefix = url.pathname.startsWith("/opencode-oauth/")
+          ? "/opencode-oauth/"
+          : "/opencode/";
+        const rest = url.pathname.slice(prefix.length);
+        const slash = rest.indexOf("/");
+        const sandboxId = slash === -1 ? rest : rest.slice(0, slash);
+
+        if (sandboxId !== auth.userId) {
+          return new Response("Forbidden", { status: 403 });
+        }
+
+        const proxied = await proxyOpenCode(request, env.SANDBOX, auth.userId);
+        if (proxied) return proxied;
+        // Shouldn't happen given the path-prefix check above, but be explicit.
+        return new Response("Not Found", { status: 404 });
       } catch (err) {
+        // Auth failed for /opencode/* — return 401 rather than redirecting
+        // to the Access login, because these paths are called by XHR/fetch
+        // from the embedded iframe, not navigated to directly.
         const message = err instanceof Error ? err.message : String(err);
-        const stack = err instanceof Error ? (err.stack ?? "") : "";
-        console.error("[/dash/oc] error:", message, stack);
-        return new Response(`[loom] /dash/oc error: ${message}\n\n${stack}`, {
-          status: 500,
-          headers: { "Content-Type": "text/plain" },
+        console.error("[/opencode] auth error:", message);
+        return new Response(JSON.stringify({ error: "Unauthorized", message }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
         });
       }
     }
 
-    // 4. /dash/* — Dash chrome (Access-gated)
+    // 5. /dash/* — Dash chrome (Access-gated)
     if (url.pathname.startsWith("/dash/") || url.pathname === "/dash") {
       try {
         const auth = await getAuthContext(request, env);
 
-        // Dash chrome: full-height iframe of the OpenCode web UI.
-        // The ?url= parameter is pre-set so OpenCode's frontend routes all
-        // API calls through /dash/oc (our proxy prefix) from the first load.
+        // Dash chrome: full-height iframe of the pre-built OpenCode mount
+        // bundle. The iframe loads `/opencode-ui/embed.html?serverUrl=...`
+        // which imports the bundle and points all API calls through
+        // `/opencode/<userId>/...` — proxied to the container by the handler
+        // above. The Worker does not start OpenCode here; it starts lazily
+        // on the first API call.
         if (url.pathname === "/dash" || url.pathname === "/dash/") {
-          const ocBase = `${url.origin}/dash/oc`;
+          const ocServerUrl = `${url.origin}/opencode/${auth.userId}`;
+          const iframeSrc =
+            `/opencode-ui/embed.html?serverUrl=${encodeURIComponent(ocServerUrl)}` +
+            `&directory=${encodeURIComponent("/home/user/workspace")}`;
+
           return new Response(
             `<!DOCTYPE html>
 <html lang="en">
@@ -265,7 +257,7 @@ export default {
   </header>
   <div class="frame-wrap">
     <iframe
-      src="/dash/oc/?url=${encodeURIComponent(ocBase)}"
+      src="${escapeHtml(iframeSrc)}"
       title="OpenCode"
       allow="clipboard-read; clipboard-write"
     ></iframe>
@@ -279,7 +271,7 @@ export default {
           );
         }
 
-        // Other /dash/* paths — placeholder until TanStack Start lands in M2+
+        // Other /dash/* paths — placeholder until TanStack Start lands in M4+
         return new Response(
           `<!DOCTYPE html>
 <html lang="en">
@@ -302,7 +294,7 @@ export default {
   <h1>loom</h1>
   <p>Path: ${escapeHtml(url.pathname)}</p>
   <p>Hello, ${escapeHtml(auth.email)}</p>
-  <p><em>Full TanStack Start UI coming in M3+</em></p>
+  <p><em>Full TanStack Start UI coming in M4+</em></p>
 </body>
 </html>`,
           {
@@ -319,7 +311,7 @@ export default {
       }
     }
 
-    // 5. /mcp — Access-gated, MCP server
+    // 6. /mcp — Access or platform JWT, MCP server
     if (url.pathname === "/mcp") {
       try {
         const mcpHandler = createMcpServerHandler(getAuthContext);
@@ -333,7 +325,7 @@ export default {
       }
     }
 
-    // 6. Root path — redirect to /dash
+    // 7. Root path — redirect to /dash
     if (url.pathname === "/" || url.pathname === "") {
       return Response.redirect(`${url.origin}/dash`, 302);
     }

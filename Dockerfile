@@ -2,7 +2,7 @@
 #
 # Runs inside Cloudflare Containers, one instance per user, fronted by the
 # Sandbox Durable Object. Hosts:
-#   • OpenCode CLI + web UI (the agent)
+#   • OpenCode CLI + serve process (the agent)
 #   • Git, Node, Python, and common CLI tools the agent uses
 #   • An optional Zero Trust root CA so OpenCode's outbound traffic to model
 #     providers flows through Cloudflare's network.
@@ -14,14 +14,20 @@
 #
 # Build context: repo root (wrangler.jsonc "image": "../../Dockerfile").
 # All COPY paths are relative to the repo root.
+#
+# v1 runs OpenCode as root. The Sandbox SDK manages container lifecycle
+# regardless of the Unix user, and running as root side-steps the permission
+# problems with OpenCode's installer writing to /root/.opencode/ (chmod 700).
+# M3 dropped the binary copy + `USER user` directive in favour of exporting
+# /root/.opencode/bin on PATH.
 
 FROM docker.io/cloudflare/sandbox:0.8.9
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LOOM_WORKSPACE=/home/user/workspace
-ENV OPENCODE_DIR=/home/user/.opencode
+ENV OPENCODE_DIR=/root/.opencode
 ENV LOOM_PUBLISH_DIR=/home/user/workspace/.publish
-ENV PATH="/usr/local/bin:$PATH"
+ENV PATH="/root/.opencode/bin:/usr/local/bin:$PATH"
 
 # Base CLI tooling so the agent doesn't waste turns installing it
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -47,24 +53,17 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g pnpm@latest
 
-# OpenCode install — copy binary to /usr/local/bin so the sandbox user can
-# execute it (/root/ is chmod 700, symlinks into it fail for non-root users).
-# The final `opencode --version` verifies the binary is in PATH and working;
-# the build fails here if the install silently produced nothing.
-RUN curl -fsSL https://opencode.ai/install | bash \
-    && cp "$(find /root -name opencode -type f | head -1)" /usr/local/bin/opencode \
-    && chmod 755 /usr/local/bin/opencode \
-    && opencode --version
+# OpenCode install — the installer drops a binary in /root/.opencode/bin,
+# which is already on PATH via ENV above. No copy / symlink / user juggling
+# required since v1 runs as root.
+RUN curl -fsSL https://opencode.ai/install | bash && opencode --version
 
-# Ensure the sandbox user exists (base image may not include it yet)
-RUN id -u user > /dev/null 2>&1 || useradd --create-home --shell /bin/bash user
-
-# Workspace + OpenCode config dirs owned by the sandbox user
-RUN mkdir -p ${LOOM_WORKSPACE} ${OPENCODE_DIR} \
-    && chown -R user:user ${LOOM_WORKSPACE} ${OPENCODE_DIR}
+# Workspace + OpenCode config dirs
+RUN mkdir -p ${LOOM_WORKSPACE} ${OPENCODE_DIR}
 
 # Default OpenCode config — points to loom's MCP server and sets provider
-# defaults. Overridable by the user via the loom UI (writes here at runtime).
+# defaults. Overlaid at container start by the Worker with per-user values
+# (platform JWT, MCP URL) written into ${OPENCODE_DIR}/opencode.jsonc.
 COPY apps/web/src/sandbox-app/opencode.jsonc ${OPENCODE_DIR}/opencode.jsonc
 COPY apps/web/src/sandbox-app/tui.jsonc      ${OPENCODE_DIR}/tui.jsonc
 
@@ -90,7 +89,6 @@ RUN chmod +x /usr/local/bin/loom-ai /usr/local/bin/loom-render
 EXPOSE 4096 5173 3000 8000 8080
 
 WORKDIR ${LOOM_WORKSPACE}
-USER user
 
 # Init git so OpenCode's change tracking works
 RUN git init -q ${LOOM_WORKSPACE} \
@@ -99,7 +97,7 @@ RUN git init -q ${LOOM_WORKSPACE} \
 
 # The Sandbox SDK manages process lifecycle — we don't start OpenCode
 # or the sidecar here. On first user interaction the Worker calls:
-#   sandbox.startProcess("opencode serve --port 4096")
+#   sandbox.startProcess("opencode serve --port 4096 --hostname 0.0.0.0")
 #   sandbox.startProcess("loom-publish --watch /home/user/workspace/.publish")
 # `loom-code`, `loom-ai`, and `loom-render` are short-lived CLIs — the
 # agent invokes them per call, no long-running process.

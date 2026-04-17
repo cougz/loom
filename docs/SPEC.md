@@ -115,9 +115,21 @@ routing).
 
 - TanStack Start app.
 - Workspace UI: header, sidebar (your tools, team library, workspace),
-  OpenCode web UI iframe proxied at `/dash/oc/*`.
+  OpenCode web UI embedded via an iframe pointed at
+  `/opencode-ui/embed.html` (pre-built static mount bundle).
 - Every request requires an Access JWT. Unauthenticated requests
   redirect to `/cdn-cgi/access/login/<hostname>`.
+
+The embedded OpenCode UI is served as three sibling Worker surfaces:
+
+| Path | Auth | Purpose |
+|---|---|---|
+| `/opencode-ui/*` | none | Static mount bundle (pre-built OpenCode SolidJS SPA + `embed.html`). Built by `scripts/build-opencode-ui` from the commit pinned in `apps/web/public/opencode-ui/VERSION`. |
+| `/opencode/<userId>/*` | Access JWT (userId must match) | API proxy to the container's OpenCode server on port 4096. Preserves SSE streaming. |
+| `/opencode-oauth/<userId>/*` | Access JWT (userId must match) | Proxies OAuth callbacks to the in-container listener OpenCode binds from its `redirectUri`. |
+
+M2's `/dash/oc/*` proxy path was removed in M3 — see
+[`M3.md`](./M3.md) for the rationale.
 
 ### 3.2 `/mcp` — the MCP server
 
@@ -356,11 +368,14 @@ Plumbed into two places:
     │                                                             │
     │  ┌─────────────────────────────────────────────────────┐   │
     │  │ Router (dispatches by hostname + path, in order):   │   │
-    │  │   1. *.hostname  → proxyToSandbox()                 │   │
-    │  │   2. /view/*     → view router (no JWT)             │   │
-    │  │   3. /dash/*     → TanStack Start (JWT required)    │   │
-    │  │   4. /dash/oc/*  → proxy → sandbox:4096 (OpenCode)  │   │
-    │  │   5. /mcp        → createMcpHandler (JWT or platform)│  │
+    │  │   1. *.hostname           → proxyToSandbox()         │   │
+    │  │   2. /view/*              → view router (no JWT)     │   │
+    │  │   3. /opencode-ui/*       → ASSETS (no JWT — static) │   │
+    │  │   4. /opencode/<uid>/*    → proxy → sandbox:4096     │   │
+    │  │      /opencode-oauth/<uid>/* → OAuth callback proxy   │   │
+    │  │   5. /dash/*              → TanStack Start (JWT)     │   │
+    │  │   6. /mcp                 → createMcpHandler         │   │
+    │  │                             (Access or platform JWT) │   │
     │  └─────────────────────────────────────────────────────┘   │
     │  ┌───────────────────┐  ┌─────────────────────┐            │
     │  │ UserRegistry DO   │  │ Sandbox DO +        │            │
@@ -539,24 +554,39 @@ code yet.
 - Worker proxies `/dash/oc/*` to the sandbox's port 4096.
 - Dash chrome renders an iframe of OpenCode's web UI.
 
-### M3 — OpenCode handshake + embed
-See [`docs/M3.md`](./M3.md) for the full implementation spec.
+### M3 — OpenCode handshake + embed ✅
+See [`docs/M3.md`](./M3.md) for the detailed design document.
 
 - **OpenCode mount bundle**: pre-built static frontend served at
   `/opencode-ui/` as Worker assets. Built by `scripts/build-opencode-ui`
-  (runs as `prebuild`). Never proxied through the Worker HTML path.
-- **New proxy routes**: `/opencode/<userId>/...` (API proxy, Access-gated)
-  and `/opencode-oauth/<userId>/...` (OAuth callback). Replaces M2
-  `/dash/oc/*`.
+  (runs as `prebuild`) from the commit pinned in
+  `apps/web/public/opencode-ui/VERSION`. Custom entry point
+  (`scripts/opencode-mount/mount.tsx`) + library Vite config
+  (`scripts/opencode-mount/vite.mount.config.ts`) are injected into
+  the clone. Never proxied through the Worker HTML path — so the
+  root-relative `/assets/...` paths baked into the bundle resolve
+  correctly under `/opencode-ui/` via `base: "/opencode-ui/"` in the
+  Vite config.
+- **New proxy routes**: `/opencode/<userId>/...` (API proxy,
+  Access-gated) and `/opencode-oauth/<userId>/...` (OAuth callback
+  proxy, Access-gated). Replaces M2's broken `/dash/oc/*`.
 - **Static embed**: iframe points to
-  `/opencode-ui/embed.html?serverUrl=/opencode/<userId>`. Assets served
-  from `/opencode-ui/`, no subpath collision.
-- **Platform JWT**: minted at sandbox spawn, written into
-  `opencode.jsonc` inside the container so OpenCode connects to `/mcp`
-  without the user re-authenticating.
-- **`/mcp` dual auth**: accepts Access JWT or platform JWT.
-- **Dockerfile simplified**: run as root, `ENV PATH` instead of binary
-  copy; removes M2 permission issues.
+  `/opencode-ui/embed.html?serverUrl=/opencode/<userId>`. Assets load
+  from `/opencode-ui/`, all API calls hit `/opencode/<userId>/*` — no
+  HTML rewriting, no subpath collision.
+- **Platform JWT**: HMAC-SHA256 signed with `PLATFORM_JWT_SECRET`,
+  `iss: "loom"`, `aud: "loom-mcp"`, 2-hour TTL. Minted per-session and
+  written into `opencode.jsonc` inside the container so OpenCode
+  connects to `/mcp` without the user re-authenticating.
+  (`apps/web/src/server/opencode-config.ts` renders the config.)
+- **`/mcp` dual auth**: `authenticateRequest` accepts either an Access
+  JWT (`Cf-Access-Jwt-Assertion` header) or a platform JWT
+  (`Authorization: Bearer <token>` where the payload has
+  `iss: "loom"`). Rotating `PLATFORM_JWT_SECRET` invalidates all live
+  platform tokens.
+- **Dockerfile simplified**: runs as root, `ENV PATH` exports
+  `/root/.opencode/bin`; drops the M2 binary copy + `USER user`
+  juggling that broke `/root/.opencode/` (chmod 700) permissions.
 
 ### M4 — Tools v1 (private)
 - Tool data model in `UserRegistry` DO.

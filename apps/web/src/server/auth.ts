@@ -26,6 +26,23 @@ export type JwtPayload = {
 };
 
 /**
+ * Platform JWT — issued by the Worker to a sandbox at spawn time. The sandbox
+ * presents it on every MCP request via `Authorization: Bearer <token>`. Unlike
+ * the Access JWT, the platform JWT is signed with a shared HMAC secret
+ * (PLATFORM_JWT_SECRET) and has an internal issuer + audience.
+ */
+export type PlatformJwtPayload = {
+  sub: UserId;
+  session_id: string;
+  iat: number;
+  exp: number;
+  iss: "loom";
+  aud: "loom-mcp";
+};
+
+const PLATFORM_JWT_TTL_SECONDS = 7200; // 2h — sandbox reconnects on expiry.
+
+/**
  * Derive userId from Access JWT sub claim.
  * Algorithm: sha256(sub) → base32hex(0, 20).toLowerCase()
  */
@@ -192,8 +209,134 @@ export async function verifyAccessJwt(
 }
 
 /**
- * Extract and verify Access JWT from request.
- * Supports both Cf-Access-Jwt-Assertion header and Authorization: Bearer header.
+ * base64url encode bytes (RFC 4648 §5 — no padding, URL-safe alphabet).
+ */
+function base64urlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/**
+ * base64url decode to bytes.
+ */
+function base64urlDecode(input: string): Uint8Array {
+  const padded = input.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = padded.length % 4;
+  const canonical = pad ? padded + "=".repeat(4 - pad) : padded;
+  const binary = atob(canonical);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function importHmacKey(secret: string, usage: "sign" | "verify"): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    [usage],
+  );
+}
+
+/**
+ * Mint a platform JWT binding a sandbox session to a userId. The sandbox
+ * presents this on every /mcp call via `Authorization: Bearer <token>`;
+ * rotating PLATFORM_JWT_SECRET invalidates all live tokens.
+ */
+export async function signPlatformJwt(
+  userId: UserId,
+  sessionId: string,
+  secret: string,
+  ttlSeconds: number = PLATFORM_JWT_TTL_SECONDS,
+): Promise<{ token: string; payload: PlatformJwtPayload }> {
+  const iat = Math.floor(Date.now() / 1000);
+  const payload: PlatformJwtPayload = {
+    sub: userId,
+    session_id: sessionId,
+    iat,
+    exp: iat + ttlSeconds,
+    iss: "loom",
+    aud: "loom-mcp",
+  };
+
+  const header = { alg: "HS256", typ: "JWT" };
+  const encoder = new TextEncoder();
+  const encodedHeader = base64urlEncode(encoder.encode(JSON.stringify(header)));
+  const encodedPayload = base64urlEncode(encoder.encode(JSON.stringify(payload)));
+  const signingInput = `${encodedHeader}.${encodedPayload}`;
+
+  const key = await importHmacKey(secret, "sign");
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(signingInput));
+  const encodedSignature = base64urlEncode(new Uint8Array(signature));
+
+  return { token: `${signingInput}.${encodedSignature}`, payload };
+}
+
+/**
+ * Verify a platform JWT. Returns the decoded payload on success, throws on
+ * signature mismatch, expiry, issuer/audience mismatch, or malformed token.
+ */
+export async function verifyPlatformJwt(
+  token: string,
+  secret: string,
+): Promise<PlatformJwtPayload> {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw new Error("Invalid platform JWT format");
+  }
+
+  const headerPart = parts[0];
+  const payloadPart = parts[1];
+  const signaturePart = parts[2];
+  if (!headerPart || !payloadPart || !signaturePart) {
+    throw new Error("Invalid platform JWT format");
+  }
+  const signingInput = `${headerPart}.${payloadPart}`;
+
+  const key = await importHmacKey(secret, "verify");
+  const signature = base64urlDecode(signaturePart);
+  const valid = await crypto.subtle.verify(
+    "HMAC",
+    key,
+    signature,
+    new TextEncoder().encode(signingInput),
+  );
+
+  if (!valid) {
+    throw new Error("Invalid platform JWT signature");
+  }
+
+  const payloadJson = new TextDecoder().decode(base64urlDecode(payloadPart));
+  const payload = JSON.parse(payloadJson) as PlatformJwtPayload;
+
+  if (payload.iss !== "loom") {
+    throw new Error("Invalid platform JWT issuer");
+  }
+  if (payload.aud !== "loom-mcp") {
+    throw new Error("Invalid platform JWT audience");
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.exp < now) {
+    throw new Error("Platform JWT expired");
+  }
+
+  return payload;
+}
+
+/**
+ * Extract and verify a JWT from the request. Accepts either:
+ *   - Access JWT via `Cf-Access-Jwt-Assertion` or `Authorization: Bearer ...`
+ *   - Platform JWT via `Authorization: Bearer ...` (only when
+ *     PLATFORM_JWT_SECRET is set and the token has `iss: "loom"`).
+ *
+ * Access wins if both are present in the same header chain.
  */
 export async function authenticateRequest(
   request: Request,
@@ -201,30 +344,57 @@ export async function authenticateRequest(
     CF_ACCESS_TEAM_DOMAIN: string;
     CF_ACCESS_AUD: string;
     PLATFORM_KV: KVNamespace;
+    PLATFORM_JWT_SECRET?: string;
   },
 ): Promise<AuthContext> {
-  // Get token from headers
   const cfJwt = request.headers.get("Cf-Access-Jwt-Assertion");
   const authHeader = request.headers.get("Authorization");
+  const bearer = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
-  let token: string | null = cfJwt;
-
-  if (!token && authHeader?.startsWith("Bearer ")) {
-    token = authHeader.slice(7);
+  // Prefer the dedicated Access header when present.
+  if (cfJwt) {
+    const payload = await verifyAccessJwt(cfJwt, env);
+    const userId = await deriveUserId(payload.sub);
+    return { userId, email: payload.email, keys: createKeys(userId) };
   }
 
-  if (!token) {
+  if (!bearer) {
     throw new Error("No JWT found in request");
   }
 
-  const payload = await verifyAccessJwt(token, env);
-  const userId = await deriveUserId(payload.sub);
+  // Peek at the token payload to choose verifier. A platform JWT identifies
+  // itself via `iss: "loom"`; anything else is treated as an Access JWT.
+  let looksLikePlatform = false;
+  try {
+    const parts = bearer.split(".");
+    const payloadPart = parts[1];
+    if (parts.length === 3 && payloadPart) {
+      const peek = JSON.parse(new TextDecoder().decode(base64urlDecode(payloadPart))) as {
+        iss?: unknown;
+      };
+      looksLikePlatform = peek.iss === "loom";
+    }
+  } catch {
+    // Malformed payload — fall through to Access verification, which will reject.
+  }
 
-  return {
-    userId,
-    email: payload.email,
-    keys: createKeys(userId),
-  };
+  if (looksLikePlatform) {
+    if (!env.PLATFORM_JWT_SECRET) {
+      throw new Error("Platform JWT presented but PLATFORM_JWT_SECRET is not configured");
+    }
+    const payload = await verifyPlatformJwt(bearer, env.PLATFORM_JWT_SECRET);
+    return {
+      userId: payload.sub,
+      // Platform JWTs do not carry the user's email. Keep the contract (email
+      // required) but leave it blank — MCP operations look only at userId.
+      email: "",
+      keys: createKeys(payload.sub),
+    };
+  }
+
+  const payload = await verifyAccessJwt(bearer, env);
+  const userId = await deriveUserId(payload.sub);
+  return { userId, email: payload.email, keys: createKeys(userId) };
 }
 
 /**

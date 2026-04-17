@@ -6,6 +6,7 @@
   "description": "The loom Worker — /dash UI and /mcp server. Single Cloudflare Workers deployment.",
   "scripts": {
     "dev": "vite dev",
+    "prebuild": "../../scripts/build-opencode-ui",
     "build": "vite build",
     "deploy": "../../scripts/gen-wrangler-config && wrangler deploy --config wrangler.local.jsonc",
     "typecheck": "tsc --noEmit",

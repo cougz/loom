@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenCode</title>
+  <link rel="stylesheet" href="/opencode-ui/opencode-mount.css" />
+  <style>
+    html, body, #root {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+    #root {
+      display: flex;
+      flex-direction: column;
+    }
+    body[data-opencode-embedded] #terminal-panel {
+      display: none !important;
+    }
+    body[data-opencode-embedded] [aria-controls="terminal-panel"] {
+      display: none !important;
+    }
+  </style>
+</head>
+<body data-opencode-embedded="true">
+  <div id="root"></div>
+  <script type="module">
+    const params = new URLSearchParams(window.location.search);
+    const serverUrl = params.get("serverUrl");
+    const directory = params.get("directory") || "/home/user/workspace";
+    const sessionId = params.get("sessionId");
+    const parentOrigin = window.location.origin;
+
+    if (!serverUrl) {
+      document.getElementById("root").textContent = "Missing serverUrl parameter";
+      window.parent.postMessage({ type: "opencode-embed-error", error: "Missing serverUrl parameter" }, parentOrigin);
+    } else {
+      import("/opencode-ui/opencode-mount.js")
+        .then(({ mount }) => {
+          mount(document.getElementById("root"), { serverUrl, directory, sessionId });
+          window.parent.postMessage({ type: "opencode-embed-ready" }, parentOrigin);
+        })
+        .catch((err) => {
+          console.error("[OpenCode Embed] Failed to load:", err);
+          document.getElementById("root").textContent = "Failed to load OpenCode";
+          window.parent.postMessage({ type: "opencode-embed-error", error: err.message || "Failed to load" }, parentOrigin);
+        });
+    }
+  </script>
+</body>
+</html>
