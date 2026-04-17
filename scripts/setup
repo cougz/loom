@@ -61,8 +61,9 @@ else
   prompt_required PLATFORM_JWT_SECRET "PLATFORM_JWT_SECRET (32+ random bytes)"
 fi
 
-# Shorthand so every wrangler call targets the right account without prompting.
-WR="npx wrangler --account-id ${CF_ACCOUNT_ID}"
+# Set account ID for all wrangler calls — prevents interactive "Select an account" prompt.
+export CLOUDFLARE_ACCOUNT_ID="${CF_ACCOUNT_ID}"
+WR="npx wrangler"
 
 # ── Provision resources ───────────────────────────────────────────────────────
 
