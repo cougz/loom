@@ -79,9 +79,8 @@
   ],
 
   "migrations": [
-    // v1: UserRegistry uses SQLite storage (DO with sql.exec API)
-    { "tag": "v1", "new_sqlite_classes": ["UserRegistry"] },
-    // v2: Sandbox is a Container class — NOT a SQLite DO; use new_classes
-    { "tag": "v2", "new_classes": ["Sandbox"] }
+    // Both DOs require new_sqlite_classes — Cloudflare Containers are
+    // built on SQLite DOs and will be rejected if declared otherwise.
+    { "tag": "v1", "new_sqlite_classes": ["UserRegistry", "Sandbox"] }
   ]
 }
