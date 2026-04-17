@@ -24,24 +24,71 @@ command -v wrangler >/dev/null || pnpm dlx wrangler --version >/dev/null
 log "Installing dependencies…"
 pnpm install --frozen-lockfile
 
-log "Provisioning Cloudflare resources. This is idempotent."
-# TODO(M1): actually call wrangler commands to create:
-#   - R2 buckets:         loom-workspace-snapshots, loom-publications
-#   - KV namespace:       loom-platform
-#   - D1 database:        loom-platform
-# ...then print a wrangler.jsonc fragment with the discovered IDs.
+log "Provisioning Cloudflare resources (idempotent)…"
 
-cat <<'EOF'
+# Create R2 buckets (idempotent)
+log "Creating R2 buckets…"
+wrangler r2 bucket create loom-workspace-snapshots 2>/dev/null || warn "Bucket loom-workspace-snapshots may already exist"
+wrangler r2 bucket create loom-publications 2>/dev/null || warn "Bucket loom-publications may already exist"
+wrangler r2 bucket create loom-tool-attachments 2>/dev/null || warn "Bucket loom-tool-attachments may already exist"
 
-Not implemented yet — this is the M0 stub. Until M1 lands, provision
-resources manually with:
+# Create KV namespace (idempotent)
+log "Creating KV namespace…"
+KV_OUTPUT=$(wrangler kv:namespace create loom-platform 2>&1 || true)
+KV_ID=$(echo "$KV_OUTPUT" | grep -oE '[0-9a-f]{32}' | head -1 || true)
 
-    wrangler r2 bucket create loom-workspace-snapshots
-    wrangler r2 bucket create loom-publications
-    wrangler kv:namespace create loom-platform
-    wrangler d1 create loom-platform
+if [[ -z "$KV_ID" ]]; then
+  # Try to get existing namespace ID
+  log "KV namespace may already exist, attempting to list…"
+  KV_LIST=$(wrangler kv:namespace list 2>/dev/null || true)
+  KV_ID=$(echo "$KV_LIST" | grep -A1 '"title": "loom-platform"' | grep -oE '[0-9a-f]{32}' | head -1 || true)
+fi
 
-Then copy the IDs into apps/web/wrangler.jsonc and set secrets per
-docs/DEPLOYMENT.md.
+# Create D1 database (idempotent)
+log "Creating D1 database…"
+D1_OUTPUT=$(wrangler d1 create loom-platform 2>&1 || true)
+D1_ID=$(echo "$D1_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)
 
+if [[ -z "$D1_ID" ]]; then
+  # Try to get existing database ID
+  log "D1 database may already exist, attempting to list…"
+  D1_LIST=$(wrangler d1 list 2>/dev/null || true)
+  D1_ID=$(echo "$D1_LIST" | grep -A1 '"name": "loom-platform"' | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1 || true)
+fi
+
+# Default IDs if we couldn't extract them
+KV_ID=${KV_ID:-"__KV_NAMESPACE_ID__"}
+D1_ID=${D1_ID:-"__D1_DATABASE_ID__"}
+
+log "Resources provisioned. Update your wrangler.jsonc with:"
+
+cat <<EOF
+
+${COL_GREEN}=== Copy this into apps/web/wrangler.jsonc ===${COL_RESET}
+
+  "kv_namespaces": [
+    { "binding": "PLATFORM_KV", "id": "${KV_ID}" }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "PLATFORM_D1",
+      "database_name": "loom-platform",
+      "database_id": "${D1_ID}"
+    }
+  ],
+
+${COL_GREEN}=== End of wrangler.jsonc fragment ===${COL_RESET}
+
+Next steps:
+  1. Copy the IDs above into apps/web/wrangler.jsonc
+  2. Set required secrets:
+     wrangler secret put CF_ACCESS_TEAM_DOMAIN
+     wrangler secret put CF_ACCESS_AUD
+     wrangler secret put CF_ACCOUNT_ID
+     wrangler secret put CF_API_TOKEN
+     wrangler secret put PLATFORM_JWT_SECRET
+  3. Run: pnpm dev
+
+See docs/DEPLOYMENT.md for details.
 EOF

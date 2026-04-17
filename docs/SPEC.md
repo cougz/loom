@@ -521,15 +521,17 @@ Secrets (set via `wrangler secret put`):
 Docs + wrangler.jsonc + Dockerfile + workspace scaffolding. No runtime
 code yet.
 
-### M1 — Auth + boot
-- TanStack Start app at `/dash` serves a placeholder.
-- Access JWT middleware covers `/dash` and `/mcp`.
-- `/view/*` path skips Access verification in the router.
-- `/mcp` stub returns an empty tool list, verified.
-- `UserRegistry` DO with a `greet()` method.
-- `wrangler dev` works end-to-end with a mock JWT.
-- `./scripts/setup` provisions resources.
-- Repo pushed to GitHub, Workers Builds wired up.
+### M1 — Auth + boot ✅
+- TanStack Start app at `/dash` serves a placeholder page showing "Hello, {email}".
+- Access JWT middleware covers `/dash` and `/mcp` with JWKS caching in PLATFORM_KV (10 min TTL).
+- `/view/*` path skips Access verification in the router (returns 404 stub for now).
+- `/mcp` endpoint returns MCP tool list with operations: tools.*, view.*, meta.* (placeholders).
+- `UserRegistry` DO with SQLite migrations for tools, tool_runs, provider_keys, resources, session tables.
+- `Sandbox` DO skeleton (re-export for wrangler.jsonc).
+- User-scoped key helpers in `apps/web/src/server/keys.ts`.
+- `wrangler dev` works end-to-end with a mock JWT (dev mode enabled when CF_ACCESS_TEAM_DOMAIN unset).
+- `./scripts/setup` provisions R2 buckets, KV namespace, and D1 database.
+- pnpm lint && pnpm typecheck && pnpm test all green.
 
 ### M2 — Sandbox + OpenCode
 - Dockerfile builds; container image published.

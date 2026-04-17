@@ -187,6 +187,41 @@ If anything fails:
 
 ---
 
+## Dev mode (local development)
+
+For local development without Cloudflare Access, loom includes a dev
+mode that uses mock authentication:
+
+    pnpm dev
+
+This starts `wrangler dev` with the following behavior:
+
+1. **Mock JWT**: When `CF_ACCESS_TEAM_DOMAIN` is not set (the default
+   in `.dev.vars`), the Worker operates in dev mode.
+2. **Bypass Access**: Requests without a valid Access JWT fall back to
+   a mock auth context (`userId: "devuser1234567890123"`,
+   `email: "dev@localhost"`).
+3. **Testing MCP**: You can test the `/mcp` endpoint with curl:
+
+       curl -X POST http://localhost:8787/mcp \
+         -H "Content-Type: application/json" \
+         -d '{"method": "tools/list", "params": {}}'
+
+4. **View stub**: `/view/<shortId>` returns 404 as expected (full
+   implementation lands in M6).
+
+To test with real Access JWT:
+
+1. Set the required secrets in `.dev.vars`:
+   
+       CF_ACCESS_TEAM_DOMAIN=yourcompany.cloudflareaccess.com
+       CF_ACCESS_AUD=your-access-aud
+
+2. Include the `Cf-Access-Jwt-Assertion` header in requests, or
+3. Include the `Authorization: Bearer <token>` header.
+
+---
+
 ## Tearing it down
 
     ./scripts/teardown

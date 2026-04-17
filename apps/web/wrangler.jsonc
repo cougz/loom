@@ -20,7 +20,7 @@
   "durable_objects": {
     "bindings": [
       { "name": "USER_REGISTRY", "class_name": "UserRegistry" },
-      { "name": "SANDBOX",       "class_name": "Sandbox" }
+      { "name": "SANDBOX", "class_name": "Sandbox" }
     ]
   },
 
@@ -40,9 +40,7 @@
   // Worker Loader binding — powers Code Mode. The sandbox's `loom-code`
   // CLI POSTs JS snippets to the Worker, which loads them in a fresh
   // isolate via env.LOADER with globalOutbound:null. See docs/CODE-MODE.md.
-  "worker_loaders": [
-    { "binding": "LOADER" }
-  ],
+  "worker_loaders": [{ "binding": "LOADER" }],
 
   // R2 — shared buckets for platform state. User-created buckets (via
   // the r2_create_bucket MCP tool) are separate, per-user.
@@ -50,14 +48,12 @@
   //   PUBLICATIONS          content served by /view/<shortId>/... (see VIEW.md)
   "r2_buckets": [
     { "binding": "WORKSPACE_SNAPSHOTS", "bucket_name": "loom-workspace-snapshots" },
-    { "binding": "PUBLICATIONS",        "bucket_name": "loom-publications" }
+    { "binding": "PUBLICATIONS", "bucket_name": "loom-publications" }
   ],
 
   // Platform KV + D1. Both partitioned by user_id. User-created KV and D1
   // are created per-user via MCP tools.
-  "kv_namespaces": [
-    { "binding": "PLATFORM_KV", "id": "__FILL_ME_FROM_SETUP_SCRIPT__" }
-  ],
+  "kv_namespaces": [{ "binding": "PLATFORM_KV", "id": "__FILL_ME_FROM_SETUP_SCRIPT__" }],
 
   "d1_databases": [
     {
@@ -76,11 +72,9 @@
   //   loom.yourcompany.com/*      main hostname (/dash, /mcp, /view) — /dash and /mcp behind Access
   //   *.loom.yourcompany.com/*    sandbox preview URLs (token in hostname)
   "routes": [
-    { "pattern": "loom.yourcompany.com/*",    "zone_name": "yourcompany.com" },
-    { "pattern": "*.loom.yourcompany.com/*",  "zone_name": "yourcompany.com" }
+    { "pattern": "loom.yourcompany.com/*", "zone_name": "yourcompany.com" },
+    { "pattern": "*.loom.yourcompany.com/*", "zone_name": "yourcompany.com" }
   ],
 
-  "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["UserRegistry", "Sandbox"] }
-  ]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserRegistry", "Sandbox"] }]
 }

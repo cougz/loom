@@ -17,6 +17,6 @@
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": true
   },
-  "include": [],
+  "include": ["packages/*/src/**/*"],
   "exclude": ["node_modules", "dist", ".output", ".wrangler"]
 }
