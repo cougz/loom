@@ -46,9 +46,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g pnpm@latest
 
-# OpenCode install
+# OpenCode install — copy to /usr/local/bin so the sandbox user can execute it
+# (symlinking /root/.opencode/bin/opencode fails because /root/ is chmod 700)
 RUN curl -fsSL https://opencode.ai/install | bash \
-    && ln -sf /root/.opencode/bin/opencode /usr/local/bin/opencode
+    && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && chmod 755 /usr/local/bin/opencode
 
 # Ensure the sandbox user exists (base image may not include it yet)
 RUN id -u user > /dev/null 2>&1 || useradd --create-home --shell /bin/bash user
