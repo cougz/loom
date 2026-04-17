@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+
+  // Egress control Worker — intercepts outbound fetch() from every
+  // user-deployed skill in the loom-skills dispatch namespace. Blocks
+  // requests to internal metadata endpoints and tags all egress with
+  // x-loom-user-id for auditability.
+  "name": "loom-outbound",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-12-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@loom/outbound",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Egress control Worker for user-deployed skills in the loom-skills dispatch namespace.",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "wrangler": "^4.0.0"
+  }
+}

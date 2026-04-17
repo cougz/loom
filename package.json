@@ -1,0 +1,27 @@
+{
+  "name": "loom",
+  "private": true,
+  "description": "Self-hostable, multi-user, agentic-AI sandbox platform on the Cloudflare Developer Platform. OpenCode inside Sandbox containers; Cloudflare primitives exposed as MCP tools. CF Access on day one. Deploys via Workers Builds.",
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @loom/web dev",
+    "build": "pnpm --filter @loom/web build",
+    "deploy": "pnpm --filter @loom/web deploy",
+    "deploy:outbound": "pnpm --filter @loom/outbound deploy",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.5",
+    "@cloudflare/workers-types": "^4.20251201.0",
+    "typescript": "^5.7.2"
+  }
+}

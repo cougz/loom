@@ -1,0 +1,25 @@
+// Baked-in OpenCode config for loom sandboxes.
+// Overlaid at container start by the Worker with per-user values:
+//   - model provider API key(s) from UserRegistry DO
+//   - MCP server URL + platform-JWT Authorization header
+//   - user display name / email from the Access JWT
+//
+// Anything set here is a default; user overrides win.
+{
+  "$schema": "https://opencode.ai/config.json",
+  "theme": "opencode",
+  "autoshare": false,
+  "autoupdate": false,
+
+  // MCP servers — loom is injected here at sandbox start. Additional
+  // servers the user configures live alongside this one.
+  "mcp": {
+    "loom": {
+      "type": "remote",
+      "url": "__REPLACED_AT_STARTUP__/mcp",
+      "headers": {
+        "Authorization": "Bearer __REPLACED_AT_STARTUP__"
+      }
+    }
+  }
+}

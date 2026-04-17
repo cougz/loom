@@ -1,0 +1,5 @@
+// OpenCode TUI config for loom sandboxes. Kept minimal — UI choices
+// belong in the OpenCode web UI the user actually sees.
+{
+  "$schema": "https://opencode.ai/tui-config.json"
+}

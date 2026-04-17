@@ -1,0 +1,22 @@
+{
+  "name": "@loom/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The loom Worker — /dash UI and /mcp server. Single Cloudflare Workers deployment.",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@cloudflare/kumo": "^1.19.0",
+    "@phosphor-icons/react": "^2.1.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "wrangler": "^4.0.0"
+  }
+}
