@@ -56,7 +56,20 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # OpenCode install — the installer drops a binary in /root/.opencode/bin,
 # which is already on PATH via ENV above. No copy / symlink / user juggling
 # required since v1 runs as root.
-RUN curl -fsSL https://opencode.ai/install | bash && opencode --version
+#
+# Version is pinned explicitly so the installer skips its
+# api.github.com/.../releases/latest call — that endpoint is rate-limited
+# (60 req/hour anonymous) and fails inside the Workers Builds Docker
+# environment, killing the image build with "Failed to fetch version
+# information". The installer still HEAD-checks the release page, so
+# setting an invalid version errors fast.
+#
+# Keep OPENCODE_VERSION in sync with the commit pinned in
+# apps/web/public/opencode-ui/VERSION — v1.4.9 corresponds to
+# commit 331dacf9.
+ARG OPENCODE_VERSION=1.4.9
+RUN curl -fsSL https://opencode.ai/install | bash -s -- --version "${OPENCODE_VERSION}" \
+    && opencode --version
 
 # Workspace + OpenCode config dirs
 RUN mkdir -p ${LOOM_WORKSPACE} ${OPENCODE_DIR}
