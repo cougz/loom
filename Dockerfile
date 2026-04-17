@@ -29,15 +29,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Node 22 + pnpm
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g pnpm@latest
-
-# Zero Trust root CA (optional).
-# If zero_trust_cert.pem at the repo root is non-empty, it is installed as a
-# trusted CA so OpenCode's fetch() to model providers trusts Cloudflare-
-# terminated egress. Leave the file empty when ZT inspection is not in use.
+# Zero Trust root CA — installed BEFORE any curl/apt calls that go over the
+# network, so TLS inspection doesn't break subsequent downloads.
+# Leave zero_trust_cert.pem empty if ZT inspection is not in use.
 COPY zero_trust_cert.pem /tmp/zt.pem
 RUN if [ -s /tmp/zt.pem ]; then \
       cp /tmp/zt.pem /usr/local/share/ca-certificates/cloudflare-zt.crt \
@@ -46,6 +40,11 @@ RUN if [ -s /tmp/zt.pem ]; then \
     && echo 'export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt' \
          >> /etc/profile.d/node-ca.sh \
     && rm -f /tmp/zt.pem
+
+# Node 22 + pnpm
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g pnpm@latest
 
 # OpenCode install
 RUN curl -fsSL https://opencode.ai/install | bash \
