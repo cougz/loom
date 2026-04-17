@@ -121,11 +121,11 @@ environment variables in Step 5.
 Workers Builds requires the Worker to exist before you can connect it.
 Do this once:
 
-    pnpm --filter @loom/web run deploy
+    pnpm --filter @loom/web build && pnpm --filter @loom/web run deploy
 
-This calls `scripts/gen-wrangler-config` (reads `apps/web/.deploy-env`
-→ generates `wrangler.local.jsonc`) then deploys with the resolved
-config. Nothing is committed to git.
+This builds the Worker bundle into `dist/client`, then calls
+`scripts/gen-wrangler-config` (reads `apps/web/.deploy-env` → generates
+`wrangler.local.jsonc`) and deploys. Nothing is committed to git.
 
 ---
 
